@@ -12,8 +12,11 @@ import logging
 import datetime
 import random
 import json
+from dotenv import load_dotenv
 from manager import Agent, initialize_population, calculate_fitness, evolve_population
 from engine import run_game_round
+
+load_dotenv()
 
 def load_config(config_path='config.yaml'):
     if not os.path.exists(config_path):
