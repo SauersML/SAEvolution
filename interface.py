@@ -1,13 +1,3 @@
-"""
-This module isolates all direct communication with external Large Language 
-Model APIs. It provides the mechanisms for generating text responses while 
-incorporating behavioral steering based on an agent's internal feature state, 
-performing contrastive analyses to identify features differentiating between 
-interaction sets, and requesting external judgments on game outcomes. It also 
-handles low-level details like API key management, request/response formatting, 
-and error handling for these external service interactions.
-"""
-
 import goodfire
 import logging
 import os
@@ -79,20 +69,22 @@ def _execute_api_call(api_call_func, *args, **kwargs):
         try:
             result = api_call_func(*args, **kwargs)
             return result
-        except goodfire.exceptions.RateLimitError as e:
-            logging.warning(f"Rate limit hit on attempt {attempt + 1}. Retrying in {current_delay:.2f} seconds. Error: {e}")
-            last_exception = e
-        except goodfire.exceptions.APIConnectionError as e:
-            logging.warning(f"API connection error on attempt {attempt + 1}. Retrying in {current_delay:.2f} seconds. Error: {e}")
-            last_exception = e
-        except goodfire.exceptions.APIStatusError as e:
-             logging.error(f"API Status Error (Status: {e.status_code}): {e}. Not retrying.")
-             raise e
+        # Use broad APIError for retries if specific exceptions are missing/incorrect
+        except goodfire.APIError as e:
+             # Check status code if available for specific handling
+             status_code = getattr(e, 'status_code', None)
+             if status_code in [429, 500, 502, 503, 504]: # Retriable HTTP errors
+                  logging.warning(f"Retriable API Error (Status: {status_code}) on attempt {attempt + 1}. Retrying in {current_delay:.2f} seconds. Error: {e}")
+                  last_exception = e
+             else: # Non-retriable API errors (like 400, 401, 403, 404)
+                  logging.error(f"Non-retriable API Error (Status: {status_code}): {e}.")
+                  raise e
         except Exception as e:
+             # Catch potential network errors etc. that might not inherit from APIError
              logging.error(f"Unexpected error during API call attempt {attempt + 1}: {e}", exc_info=True)
              last_exception = e
              if attempt == max_retries - 1:
-                 raise e
+                 raise e # Re-raise unexpected error after final attempt
 
         time.sleep(current_delay)
         current_delay *= backoff_factor
@@ -100,6 +92,7 @@ def _execute_api_call(api_call_func, *args, **kwargs):
 
     logging.error(f"API call failed after {max_retries} retries.")
     raise TimeoutError(f"API call failed after {max_retries} retries.") from last_exception
+
 
 def generate_scenario(proposer_agent, config: dict):
     from manager import Agent
@@ -142,7 +135,14 @@ def generate_scenario(proposer_agent, config: dict):
             retry_config=retry_config
         )
 
-        raw_content = response.choices[0].message.content.strip()
+        if not response or not response.choices or not isinstance(response.choices[0].message, dict):
+             logging.error(f"Invalid response structure received from API for agent {proposer_agent.agent_id}.")
+             return None
+
+        raw_content = response.choices[0].message.get('content', '').strip()
+        if not raw_content:
+             logging.warning(f"Empty content received from API for agent {proposer_agent.agent_id}.")
+             return None
 
         try:
             parsed_json = json.loads(raw_content)
@@ -222,7 +222,11 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
             retry_config=retry_config
         )
 
-        response_text = response.choices[0].message.content.strip()
+        if not response or not response.choices or not isinstance(response.choices[0].message, dict):
+             logging.error(f"Invalid response structure received from API for agent {agent.agent_id}.")
+             return None
+
+        response_text = response.choices[0].message.get('content', '').strip()
         if not response_text:
              logging.warning(f"Agent {agent.agent_id} generated an empty response.")
              return None
@@ -272,7 +276,11 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict):
             retry_config=retry_config
         )
 
-        result_text = response.choices[0].message.content.strip().replace('.', '')
+        if not response or not response.choices or not isinstance(response.choices[0].message, dict):
+             logging.error(f"Invalid response structure received from adjudicator API.")
+             return "error"
+
+        result_text = response.choices[0].message.get('content', '').strip().replace('.', '')
 
         valid_outcomes = ['Role A Wins', 'Role B Wins', 'Tie']
         if result_text in valid_outcomes:
