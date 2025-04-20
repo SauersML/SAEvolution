@@ -1,9 +1,7 @@
 """
-This script serves as the main entry point and orchestrator for the LLM evolution
-simulation. It loads simulation parameters from the configuration file, 
-initializes the population of agents using `agent_manager`, runs the main loop 
-over the specified number of generations, coordinates the execution of game 
-rounds (utilizing `game_engine` logic) and the evolutionary step (using 
-`agent_manager`) within each generation, and manages high-level logging and 
-periodic saving of the simulation state.
+This script serves as the main entry point and conductor for the simulation. 
+It loads parameters from the configuration file, establishes the initial 
+population of agents, controls the primary loop iterating through generations, 
+sequences the execution of game rounds and the subsequent evolutionary updates 
+for each generation, and oversees overall simulation logging and state saving.
 """
