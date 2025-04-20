@@ -16,7 +16,6 @@ import random
 import hashlib
 import json
 import copy
-from manager import Agent
 
 _client_instance = None
 _last_client_config_hash = None
@@ -102,7 +101,8 @@ def _execute_api_call(api_call_func, *args, **kwargs):
     logging.error(f"API call failed after {max_retries} retries.")
     raise TimeoutError(f"API call failed after {max_retries} retries.") from last_exception
 
-def generate_scenario(proposer_agent: Agent, config: dict):
+def generate_scenario(proposer_agent, config: dict):
+    from manager import Agent
     if not isinstance(proposer_agent, Agent):
         logging.error("generate_scenario: Invalid proposer_agent provided.")
         return None
@@ -174,7 +174,8 @@ def generate_scenario(proposer_agent: Agent, config: dict):
         logging.error(f"Error generating scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
         return None
 
-def generate_agent_response(agent: Agent, scenario_data: dict, transcript: list, current_role: str, config: dict):
+def generate_agent_response(agent, scenario_data: dict, transcript: list, current_role: str, config: dict):
+    from manager import Agent
     if not isinstance(agent, Agent) or not isinstance(scenario_data, dict) or \
        not isinstance(transcript, list) or not isinstance(current_role, str) or \
        not isinstance(config, dict):
@@ -293,6 +294,7 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict):
         return "error"
 
 def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant_or_model_id, top_k: int, config: dict):
+    from manager import Agent
     if not isinstance(dataset_1, list) or not isinstance(dataset_2, list) or \
        not isinstance(top_k, int) or not isinstance(config, dict):
         logging.error("perform_contrastive_analysis: Invalid arguments provided.")
