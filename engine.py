@@ -277,9 +277,6 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict) -> None:
         logging.critical(f"Critical unhandled error during single game logic between {agent1.agent_id} and {agent2.agent_id}: {e}", exc_info=True)
         hist_entry_for_agent1['outcome'] = 'error' # Mark as error for agent1
         hist_entry_for_agent1['wealth_change'] = 0.0
-        if hist_entry_for_agent1['bets'] is None: # bets are recorded if error occurred before they were set
-            try { "ISSUE: call _determine_bets and set hist_entry_for_agent1['bets']" } # noqa
-            except: pass # Avoid error in error handling
     finally:
         # 6. Record Game History for both agents
         try:
