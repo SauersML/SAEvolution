@@ -5,29 +5,21 @@ manages the turn-based conversational exchange between the participants,
 initiates the evaluation of the interaction's outcome based on scenario rules,
 and calculates the resulting wealth adjustment between the players according to
 bets placed and the final verdict.
+It also collects detailed information about each game for logging and dashboarding.
 """
 
 import random
 import logging
-import copy # math module was imported but not used.
+import copy
+import datetime
+import uuid # For unique game IDs
 from manager import Agent
 from interface import generate_scenario, generate_agent_response, adjudicate_interaction
 
 def _apply_wealth_change(winner: Agent, loser: Agent, winner_bet: float, loser_bet: float, max_loss_multiplier: float, max_gain_ratio: float) -> tuple[float, float]:
     """
     Applies wealth changes to winner and loser based on bets and game parameters.
-
-    Args:
-        winner: The winning Agent object.
-        loser: The losing Agent object.
-        winner_bet: The amount bet by the winner (used for logging, not directly for gain calculation cap here).
-        loser_bet: The amount bet by the loser (used for gain calculation cap for winner).
-        max_loss_multiplier: Multiplier for the loser's bet to determine max potential loss.
-        max_gain_ratio: Max ratio of winner's initial wealth they can have after winning (e.g., 2.0 for doubling).
-                       A ratio of 2.0 means the winner's wealth can at most double (gain = current wealth).
-
-    Returns:
-        A tuple (actual_gain_for_winner, actual_loss_for_loser).
+    Returns: A tuple (actual_gain_for_winner, actual_loss_for_loser).
     """
     if not all(isinstance(agent, Agent) for agent in [winner, loser]):
         logging.error("_apply_wealth_change: Invalid Agent objects provided.")
@@ -38,39 +30,29 @@ def _apply_wealth_change(winner: Agent, loser: Agent, winner_bet: float, loser_b
     if max_loss_multiplier < 0:
          logging.error(f"_apply_wealth_change: Invalid max_loss_multiplier ({max_loss_multiplier}). Must be non-negative.")
          return 0.0, 0.0
-    if max_gain_ratio < 1.0: # Winning implies gain, so ratio must allow for at least maintaining wealth.
+    if max_gain_ratio < 1.0:
          logging.error(f"_apply_wealth_change: Invalid max_gain_ratio ({max_gain_ratio}). Must be >= 1.0.")
          return 0.0, 0.0
 
-    # Calculate loser's actual loss
-    # Loser cannot lose more than their current wealth or their bet * multiplier.
     potential_loss_for_loser = loser_bet * max_loss_multiplier
     actual_loss_for_loser = min(loser.wealth, potential_loss_for_loser)
-    actual_loss_for_loser = max(0.0, actual_loss_for_loser) # loss is not negative (e.g. if wealth was 0)
+    actual_loss_for_loser = max(0.0, actual_loss_for_loser)
 
-    # Calculate winner's actual gain
-    # 1. Gain is fundamentally limited by what the loser actually lost.
     gain_from_loser = actual_loss_for_loser
-    
-    # 2. As per paper: "winner can only gain up to the loser's bet" (original bet, not multiplied loss).
     gain_capped_by_loser_original_bet = min(gain_from_loser, loser_bet)
-
-    # 3. As per paper: "winner cannot more than double their own money".
-    # If max_gain_ratio is 2.0, max_gain_amount is winner.wealth * (2.0 - 1.0) = winner.wealth.
-    # New wealth will be winner.wealth + winner.wealth = 2 * winner.wealth.
     max_gain_amount_for_winner = winner.wealth * (max_gain_ratio - 1.0)
-    if max_gain_amount_for_winner < 0: # Could happen if winner.wealth is negative (though unlikely with current rules) or max_gain_ratio < 1
+    if max_gain_amount_for_winner < 0:
         max_gain_amount_for_winner = 0.0
 
     actual_gain_for_winner = min(gain_capped_by_loser_original_bet, max_gain_amount_for_winner)
-    actual_gain_for_winner = max(0.0, actual_gain_for_winner) # gain is not negative
+    actual_gain_for_winner = max(0.0, actual_gain_for_winner)
 
     try:
         winner.wealth += actual_gain_for_winner
         loser.wealth -= actual_loss_for_loser
-    except AttributeError: # Should not happen if type checks pass
+    except AttributeError:
         logging.error(f"AttributeError updating wealth for {getattr(winner, 'agent_id', 'Unknown Winner')} or {getattr(loser, 'agent_id', 'Unknown Loser')}.")
-        return 0.0, 0.0 # Return zero change if update fails
+        return 0.0, 0.0
 
     logging.debug(f"Wealth change: Winner {winner.agent_id} (bet {winner_bet:.2f}) gains {actual_gain_for_winner:.2f}. Loser {loser.agent_id} (bet {loser_bet:.2f}) loses {actual_loss_for_loser:.2f}.")
     return actual_gain_for_winner, actual_loss_for_loser
@@ -85,10 +67,9 @@ def _determine_bets(agent1: Agent, agent2: Agent, config: dict) -> tuple[float, 
     if not isinstance(config, dict):
         logging.error("_determine_bets: Invalid config provided.")
         return 0.0, 0.0
-        
+
     betting_config = config.get('game', {}).get('betting', {})
     strategy = betting_config.get('strategy', 'fixed')
-    
     fixed_amount = float(betting_config.get('fixed_amount', 5.0))
     min_bet = float(betting_config.get('min_bet', 1.0))
     max_bet_ratio = float(betting_config.get('max_bet_ratio', 0.5))
@@ -98,322 +79,334 @@ def _determine_bets(agent1: Agent, agent2: Agent, config: dict) -> tuple[float, 
     if strategy == 'fixed':
         bet1_val = fixed_amount
         bet2_val = fixed_amount
-    # Example for a future strategy:
-    # elif strategy == 'percentage_wealth':
-    #     percentage = betting_config.get('percentage_amount', 0.1) # e.g., 10%
-    #     bet1_val = agent1.wealth * percentage
-    #     bet2_val = agent2.wealth * percentage
     else:
         logging.warning(f"Unsupported betting strategy '{strategy}' in config. Defaulting to fixed amount: {fixed_amount}.")
         bet1_val = fixed_amount
         bet2_val = fixed_amount
 
-    # Apply cap: bet cannot exceed max_bet_ratio of current wealth
     bet1_val = min(bet1_val, agent1.wealth * max_bet_ratio)
     bet2_val = min(bet2_val, agent2.wealth * max_bet_ratio)
-    
-    # Apply floor: bet must be at least min_bet (but not more than current wealth)
     bet1_val = max(min_bet, bet1_val)
-    bet1_val = min(agent1.wealth, bet1_val) # Cannot bet more than available wealth
-
+    bet1_val = min(agent1.wealth, bet1_val)
     bet2_val = max(min_bet, bet2_val)
-    bet2_val = min(agent2.wealth, bet2_val) # Cannot bet more than available wealth
-    
-    # Final check: bets are non-negative
+    bet2_val = min(agent2.wealth, bet2_val)
     bet1_val = max(0.0, bet1_val)
     bet2_val = max(0.0, bet2_val)
 
     logging.debug(f"Agent {agent1.agent_id} (wealth {agent1.wealth:.2f}) bets {bet1_val:.2f}. Agent {agent2.agent_id} (wealth {agent2.wealth:.2f}) bets {bet2_val:.2f}.")
     return bet1_val, bet2_val
 
-def _play_single_game(agent1: Agent, agent2: Agent, config: dict) -> None:
+def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, generation_number: int, game_index_in_round: int) -> dict:
     """
-    Manages a single game interaction between two agents (agent1 and agent2).
-    Updates agent wealth and game history for both participating agents.
+    Manages a single game interaction between two agents.
+    Updates agent wealth and internal history.
+    Returns a dictionary with comprehensive details of the game for external logging/dashboarding.
     """
     if not all(isinstance(agent, Agent) for agent in [agent1, agent2]):
         logging.error("Invalid Agent objects provided to _play_single_game.")
-        return
+        return {} # Return empty dict on error
     if not isinstance(config, dict):
         logging.error("Invalid config provided to _play_single_game.")
-        return
+        return {}
+
+    game_id = f"{run_id}_gen{generation_number}_game{game_index_in_round}_{uuid.uuid4().hex[:8]}"
+    timestamp_start = datetime.datetime.now().isoformat()
+
+    game_details_dict = {
+        "game_id": game_id,
+        "run_id": run_id,
+        "generation_number": generation_number,
+        "timestamp_start": timestamp_start,
+        "timestamp_end": None, # Will be set later
+        "proposer_agent_id": None,
+        "opponent_in_proposal_agent_id": None,
+        "player_A_id": agent1.agent_id,
+        "player_B_id": agent2.agent_id,
+        "player_A_game_role": None,
+        "player_B_game_role": None,
+        "scenario_text": "Error: Scenario not processed.",
+        "scenario_raw_llm_output": None,
+        "scenario_generation_successful": False,
+        "transcript": [], # Will be populated
+        "adjudication_prompt": None,
+        "adjudication_raw_llm_output": None, # If interface provides it
+        "adjudication_result": "Error: Adjudication not run.",
+        "betting_details": None,
+        "wealth_changes": None,
+        "final_player_A_wealth": agent1.wealth, # Initial wealth for now
+        "final_player_B_wealth": agent2.wealth, # Initial wealth for now
+        "defaulted_to_tie_reason": None
+    }
 
     game_config = config.get('game', {})
-    interaction_turns = game_config.get('interaction_turns_per_agent', 3) # Total turns = this * 2
-    
+    interaction_turns = game_config.get('interaction_turns_per_agent', 3)
     betting_conf = config.get('game', {}).get('betting', {})
     max_loss_mult = float(betting_conf.get('max_loss_multiplier', 1.0))
     max_gain_ratio_val = float(betting_conf.get('max_gain_ratio', 2.0))
 
-    # Randomly assign one agent as the scenario proposer
-    # The other agent is the opponent in the proposal phase
-    # These are agent1 and agent2, just in a specific order for this game step
     proposer_obj, opponent_obj = random.sample([agent1, agent2], 2)
+    game_details_dict["proposer_agent_id"] = proposer_obj.agent_id
+    game_details_dict["opponent_in_proposal_agent_id"] = opponent_obj.agent_id
 
-    logging.info(f"Starting game. Proposer: {proposer_obj.agent_id}, Opponent: {opponent_obj.agent_id}. (Full pair: {agent1.agent_id} vs {agent2.agent_id})")
+    logging.info(f"Game {game_id}: Proposer: {proposer_obj.agent_id}, Opponent: {opponent_obj.agent_id}. (Full pair: {agent1.agent_id} vs {agent2.agent_id})")
 
-    scenario_data_dict = None
-    transcript_list = []
-    bet_agent1, bet_agent2 = 0.0, 0.0 # Bets for the specific agents agent1 and agent2
-    
-    # This history entry is built from the perspective of agent1
-    # It will be deepcopied and adapted for agent2 later.
+    # For Agent's internal history (simplified compared to full game_details_dict)
     hist_entry_for_agent1 = {
-        'opponent_id': agent2.agent_id, # agent1's opponent is agent2
+        'game_id': game_id,
+        'opponent_id': agent2.agent_id,
         'role_in_proposal': 'proposer' if agent1 == proposer_obj else 'opponent',
-        'role_in_game': None, # 'Role A' or 'Role B' for agent1
-        'scenario_text': "Scenario not generated or error.", # Default
-        'transcript': transcript_list, # Appended to directly
-        'bets': None, # Dict: {'agent1_bet': bet_agent1, 'agent2_bet': bet_agent2}
-        'outcome': 'error', # For agent1
-        'wealth_change': 0.0  # For agent1
+        'role_in_game': None,
+        'scenario_text': game_details_dict["scenario_text"], # Will be updated
+        'transcript_snippet': None, # Could be a snippet or reference
+        'bets': None,
+        'outcome': 'error',
+        'wealth_change': 0.0
     }
 
     actual_winner_agent: Agent | None = None
     actual_loser_agent: Agent | None = None
+    adjudication_final_text = "Error" # Default adjudication text
 
     try:
-        # 1. Scenario Generation by proposer_obj
-        scenario_data_dict = generate_scenario(proposer_obj, config)
+        # 1. Scenario Generation
+        scenario_info = generate_scenario(proposer_obj, config) # generate_scenario should return a dict
 
-        if not isinstance(scenario_data_dict, dict) or \
-           'scenario_text' not in scenario_data_dict or \
-           not isinstance(scenario_data_dict.get('scenario_text'), str) or \
-           'role_assignment' not in scenario_data_dict or \
-           not isinstance(scenario_data_dict.get('role_assignment'), dict) or \
-           proposer_obj.agent_id not in scenario_data_dict['role_assignment']:
+        if isinstance(scenario_info, dict) and scenario_info.get('scenario_text') and scenario_info.get('role_assignment'):
+            game_details_dict["scenario_text"] = scenario_info['scenario_text']
+            game_details_dict["scenario_raw_llm_output"] = scenario_info.get('raw_output') # Assuming interface.py might add this
+            game_details_dict["scenario_generation_successful"] = True
+            hist_entry_for_agent1['scenario_text'] = scenario_info['scenario_text'] # Update for agent history too
+            logging.debug(f"Game {game_id}: Scenario generated by {proposer_obj.agent_id}: '{scenario_info['scenario_text'][:100]}...'")
+
+            # Assign roles for the game interaction based on scenario_info
+            role_map = scenario_info['role_assignment'] # Should contain {proposer_id: 'Role A/B'}
+            proposer_game_role = role_map[proposer_obj.agent_id]
+            opponent_game_role = 'Role B' if proposer_game_role == 'Role A' else 'Role A'
             
-            logging.warning(f"Scenario generation failed or returned invalid data for proposer {proposer_obj.agent_id}. Proposer ({proposer_obj.agent_id}) loses by default.")
-            actual_winner_agent, actual_loser_agent = opponent_obj, proposer_obj
-            hist_entry_for_agent1['scenario_text'] = "Scenario generation failed or invalid."
-        else:
-            # Scenario generation successful
-            hist_entry_for_agent1['scenario_text'] = scenario_data_dict['scenario_text']
-            logging.debug(f"Scenario generated by {proposer_obj.agent_id}: '{scenario_data_dict['scenario_text'][:100]}...'")
+            # Store game roles for agent1 and agent2
+            if agent1 == proposer_obj:
+                game_details_dict["player_A_game_role"] = proposer_game_role
+                game_details_dict["player_B_game_role"] = opponent_game_role
+            else: # agent1 == opponent_obj
+                game_details_dict["player_A_game_role"] = opponent_game_role
+                game_details_dict["player_B_game_role"] = proposer_game_role
+            
+            hist_entry_for_agent1['role_in_game'] = game_details_dict["player_A_game_role"]
+            logging.info(f"Game {game_id} roles: {agent1.agent_id} is {game_details_dict['player_A_game_role']}, {agent2.agent_id} is {game_details_dict['player_B_game_role']}")
 
-            # *** CRITICAL FIX FOR ROLE ASSIGNMENT ***
-            # scenario_data_dict['role_assignment'] initially only has proposer's role.
-            proposer_assigned_game_role = scenario_data_dict['role_assignment'][proposer_obj.agent_id]
-            opponent_assigned_game_role = 'Role B' if proposer_assigned_game_role == 'Role A' else 'Role A'
-            scenario_data_dict['role_assignment'][opponent_obj.agent_id] = opponent_assigned_game_role
-            # Now role_assignment contains entries for both proposer_obj and opponent_obj
+            # 2. Interaction Phase
+            interaction_players = [agent1, agent2]
+            random.shuffle(interaction_players) # Randomize who speaks first in the dialogue
+            
+            current_transcript = []
+            for turn_idx in range(interaction_turns * 2):
+                current_turn_agent = interaction_players[turn_idx % 2]
+                current_turn_agent_game_role = game_details_dict["player_A_game_role"] if current_turn_agent == agent1 else game_details_dict["player_B_game_role"]
+                
+                logging.debug(f"Game {game_id} Turn {turn_idx + 1}: Agent {current_turn_agent.agent_id} ({current_turn_agent_game_role}) responding.")
+                # scenario_data_dict for generate_agent_response should be the `scenario_info` from generate_scenario
+                response_txt = generate_agent_response(current_turn_agent, scenario_info, current_transcript, current_turn_agent_game_role, config)
 
-            # Determine game roles for agent1 and agent2 (the specific pair passed to this function)
-            agent1_game_role = scenario_data_dict['role_assignment'].get(agent1.agent_id)
-            agent2_game_role = scenario_data_dict['role_assignment'].get(agent2.agent_id)
-            hist_entry_for_agent1['role_in_game'] = agent1_game_role
+                turn_entry = {"role": current_turn_agent_game_role, "agent_id": current_turn_agent.agent_id, "content": "[Agent failed to provide a response]"}
+                if response_txt and isinstance(response_txt, str) and response_txt.strip():
+                    turn_entry["content"] = response_txt
+                    logging.debug(f"Game {game_id}: Agent {current_turn_agent.agent_id} response: '{response_txt[:100]}...'")
+                else:
+                    logging.warning(f"Game {game_id}: Agent {current_turn_agent.agent_id} failed to generate a valid/non-empty response.")
+                current_transcript.append(turn_entry)
+            
+            game_details_dict["transcript"] = current_transcript
+            hist_entry_for_agent1['transcript_snippet'] = f"{len(current_transcript)} turns" # Or first/last turn snippet
 
-            if not agent1_game_role or not agent2_game_role:
-                 logging.error(f"Failed to assign game roles correctly for game involving {agent1.agent_id} and {agent2.agent_id} despite scenario success. Defaulting to Tie.")
-                 # Outcome remains 'error' or becomes 'tie' based on later logic for wealth_change
+            # 3. Adjudication
+            # adjudicate_interaction should accept the scenario_info dict and the transcript
+            adjudication_final_text = adjudicate_interaction(scenario_info, current_transcript, config)
+            game_details_dict["adjudication_result"] = adjudication_final_text
+            # game_details_dict["adjudication_prompt"] = ... # if interface.py can provide this
+            # game_details_dict["adjudication_raw_llm_output"] = ... # if interface.py can provide this
+
+            if adjudication_final_text in ['Role A Wins', 'Role B Wins', 'Tie']:
+                if adjudication_final_text == 'Role A Wins':
+                    actual_winner_agent = agent1 if game_details_dict["player_A_game_role"] == 'Role A' else agent2
+                    actual_loser_agent = agent2 if game_details_dict["player_A_game_role"] == 'Role A' else agent1
+                elif adjudication_final_text == 'Role B Wins':
+                    actual_winner_agent = agent1 if game_details_dict["player_A_game_role"] == 'Role B' else agent2
+                    actual_loser_agent = agent2 if game_details_dict["player_A_game_role"] == 'Role B' else agent1
+                logging.info(f"Game {game_id}: Adjudication result: {adjudication_final_text}.")
             else:
-                logging.info(f"Game roles: {agent1.agent_id} is {agent1_game_role}, {agent2.agent_id} is {agent2_game_role}")
+                logging.warning(f"Game {game_id}: Invalid or non-standard adjudication result: '{adjudication_final_text}'. Game defaulted to Tie.")
+                game_details_dict["defaulted_to_tie_reason"] = f"Adjudication error: {adjudication_final_text}"
+                # actual_winner_agent and actual_loser_agent remain None -> Tie
 
-                # 2. Interaction Phase
-                # Determine who starts the interaction: random choice for now
-                interaction_players = [agent1, agent2] # Use the specific agents for this game
-                random.shuffle(interaction_players) 
-                
-                for turn_idx in range(interaction_turns * 2): # Each agent gets `interaction_turns`
-                    current_turn_agent = interaction_players[turn_idx % 2]
-                    current_turn_agent_game_role = scenario_data_dict['role_assignment'][current_turn_agent.agent_id]
+        else: # Scenario generation failed
+            game_details_dict["scenario_text"] = "Scenario generation failed or returned invalid data."
+            game_details_dict["scenario_generation_successful"] = False
+            logging.warning(f"Game {game_id}: Scenario generation failed. Proposer ({proposer_obj.agent_id}) loses by default.")
+            actual_winner_agent, actual_loser_agent = opponent_obj, proposer_obj
+            game_details_dict["defaulted_to_tie_reason"] = "Scenario generation failure (proposer loss)" # Or specific outcome
+            game_details_dict["adjudication_result"] = "Proposer Loss (Scenario Fail)" # More specific than "Error"
 
-                    logging.debug(f"Turn {turn_idx + 1}: Agent {current_turn_agent.agent_id} ({current_turn_agent_game_role}) is responding.")
-                    response_txt = generate_agent_response(current_turn_agent, scenario_data_dict, transcript_list, current_turn_agent_game_role, config)
 
-                    if response_txt is None or not isinstance(response_txt, str) or not response_txt.strip():
-                        logging.warning(f"Agent {current_turn_agent.agent_id} failed to generate a valid/non-empty response. Turn content will be marked.")
-                        transcript_list.append({"role": current_turn_agent_game_role, "content": "[Agent failed to provide a response]"})
-                    else:
-                        transcript_list.append({"role": current_turn_agent_game_role, "content": response_txt})
-                        logging.debug(f"Agent {current_turn_agent.agent_id} response captured: '{response_txt[:100]}...'")
-                
-                # 3. Adjudication
-                adjudication_txt = adjudicate_interaction(scenario_data_dict, transcript_list, config)
-                
-                if isinstance(adjudication_txt, str) and adjudication_txt in ['Role A Wins', 'Role B Wins', 'Tie']:
-                    role_map = scenario_data_dict['role_assignment']
-                    
-                    # Find which Agent object was Role A and Role B
-                    agent_is_role_A = None
-                    agent_is_role_B = None
-                    for agent_id_in_map, game_r in role_map.items():
-                        current_agent_obj = agent1 if agent1.agent_id == agent_id_in_map else agent2
-                        if game_r == 'Role A': agent_is_role_A = current_agent_obj
-                        elif game_r == 'Role B': agent_is_role_B = current_agent_obj
-                    
-                    if adjudication_txt == 'Role A Wins' and agent_is_role_A:
-                        actual_winner_agent, actual_loser_agent = agent_is_role_A, agent_is_role_B
-                    elif adjudication_txt == 'Role B Wins' and agent_is_role_B:
-                        actual_winner_agent, actual_loser_agent = agent_is_role_B, agent_is_role_A
-                    # If 'Tie', actual_winner_agent and actual_loser_agent remain None
-                    logging.info(f"Adjudication result: {adjudication_txt}.")
-                else: 
-                    logging.warning(f"Invalid or non-standard adjudication result: '{adjudication_txt}'. Game defaulted to Tie.")
-                    # actual_winner_agent and actual_loser_agent remain None, leading to a tie.
-
-        # This block executes if scenario generation failed OR if it succeeded.
-        # 4. Determine Bets (if not already set due to early exit)
-        # Bets are determined regardless of scenario success for record keeping.
+        # 4. Determine Bets
         bet_agent1, bet_agent2 = _determine_bets(agent1, agent2, config)
+        game_details_dict["betting_details"] = {"player_A_bet": bet_agent1, "player_B_bet": bet_agent2}
         hist_entry_for_agent1['bets'] = {'agent1_bet': bet_agent1, 'agent2_bet': bet_agent2}
 
-        # 5. Determine Final Outcome for agent1 and Apply Wealth Change
-        if actual_winner_agent and actual_loser_agent: # A clear winner and loser
-            hist_entry_for_agent1['outcome'] = 'win' if agent1 == actual_winner_agent else 'loss'
+        # 5. Apply Wealth Change and Finalize Game Details
+        wealth_A_change, wealth_B_change = 0.0, 0.0
+        if actual_winner_agent and actual_loser_agent:
+            winner_bet = bet_agent1 if actual_winner_agent == agent1 else bet_agent2
+            loser_bet = bet_agent2 if actual_winner_agent == agent1 else bet_agent1 # This logic seems off, should be loser's bet
             
-            winner_bet_val = bet_agent1 if actual_winner_agent == agent1 else bet_agent2
-            loser_bet_val = bet_agent1 if actual_loser_agent == agent1 else bet_agent2
+            # Corrected bet passing:
+            gain, loss = _apply_wealth_change(actual_winner_agent, actual_loser_agent, 
+                                              bet_agent1 if actual_winner_agent == agent1 else bet_agent2, # winner's bet amount
+                                              bet_agent1 if actual_loser_agent == agent1 else bet_agent2,   # loser's bet amount
+                                              max_loss_mult, max_gain_ratio_val)
 
-            gain, loss = _apply_wealth_change(actual_winner_agent, actual_loser_agent, winner_bet_val, loser_bet_val, max_loss_mult, max_gain_ratio_val)
-            hist_entry_for_agent1['wealth_change'] = gain if agent1 == actual_winner_agent else -loss
-        else: # Tie (or error that resolved to tie)
+            if actual_winner_agent == agent1:
+                wealth_A_change = gain
+                wealth_B_change = -loss
+                hist_entry_for_agent1['outcome'] = 'win'
+            else: # actual_winner_agent == agent2
+                wealth_A_change = -loss
+                wealth_B_change = gain
+                hist_entry_for_agent1['outcome'] = 'loss'
+            hist_entry_for_agent1['wealth_change'] = wealth_A_change
+        else: # Tie
             hist_entry_for_agent1['outcome'] = 'tie'
             hist_entry_for_agent1['wealth_change'] = 0.0
-        
-        logging.info(f"Game outcome for {agent1.agent_id}: {hist_entry_for_agent1['outcome']}, wealth change: {hist_entry_for_agent1['wealth_change']:.2f}")
+            # adjudication_result might already be 'Tie' or an error message
+            if not game_details_dict["defaulted_to_tie_reason"]:
+                game_details_dict["defaulted_to_tie_reason"] = "Adjudicated as Tie"
+            if adjudication_final_text != "Tie": # If it wasn't explicitly a Tie from adjudicator
+                game_details_dict["adjudication_result"] = "Tie (Defaulted)"
 
-    except Exception as e: # Catch-all for unexpected issues during game play
-        logging.critical(f"Critical unhandled error during single game logic between {agent1.agent_id} and {agent2.agent_id}: {e}", exc_info=True)
-        hist_entry_for_agent1['outcome'] = 'error' # Mark as error for agent1
+
+        game_details_dict["wealth_changes"] = {"player_A_wealth_change": wealth_A_change, "player_B_wealth_change": wealth_B_change}
+        logging.info(f"Game {game_id}: Outcome for {agent1.agent_id}: {hist_entry_for_agent1['outcome']}, wealth change: {wealth_A_change:.2f}. For {agent2.agent_id} wealth change: {wealth_B_change:.2f}")
+
+    except Exception as e:
+        logging.critical(f"Game {game_id}: Critical unhandled error during single game logic: {e}", exc_info=True)
+        hist_entry_for_agent1['outcome'] = 'error'
         hist_entry_for_agent1['wealth_change'] = 0.0
+        game_details_dict["adjudication_result"] = "Critical Game Error"
+        game_details_dict["defaulted_to_tie_reason"] = f"Critical error: {str(e)[:100]}"
     finally:
-        # 6. Record Game History for both agents
+        # 6. Record Game History for agents (internal)
         try:
-            agent1.add_game_result(copy.deepcopy(hist_entry_for_agent1)) # hist_entry_for_agent1 is already from agent1's perspective
-
+            agent1.add_game_result(copy.deepcopy(hist_entry_for_agent1))
             hist_entry_for_agent2 = copy.deepcopy(hist_entry_for_agent1)
             hist_entry_for_agent2['opponent_id'] = agent1.agent_id
             hist_entry_for_agent2['role_in_proposal'] = 'proposer' if agent2 == proposer_obj else 'opponent'
-            if scenario_data_dict and 'role_assignment' in scenario_data_dict: # scenario_data_dict is available
-                hist_entry_for_agent2['role_in_game'] = scenario_data_dict['role_assignment'].get(agent2.agent_id)
-            else:
-                hist_entry_for_agent2['role_in_game'] = None # Or 'unknown' if scenario failed early
-
+            hist_entry_for_agent2['role_in_game'] = game_details_dict["player_B_game_role"]
             if hist_entry_for_agent1['outcome'] == 'win': hist_entry_for_agent2['outcome'] = 'loss'
             elif hist_entry_for_agent1['outcome'] == 'loss': hist_entry_for_agent2['outcome'] = 'win'
-            else: hist_entry_for_agent2['outcome'] = hist_entry_for_agent1['outcome'] # tie or error
-            
+            else: hist_entry_for_agent2['outcome'] = hist_entry_for_agent1['outcome']
             hist_entry_for_agent2['wealth_change'] = -hist_entry_for_agent1['wealth_change']
-            # Bets dict {'agent1_bet': ..., 'agent2_bet': ...} remains consistent, referring to agent1 and agent2 objects.
-            
             agent2.add_game_result(hist_entry_for_agent2)
-        except AttributeError as e: # If Agent objects are malformed
-             logging.error(f"AttributeError adding game result to agent history ({agent1.agent_id} or {agent2.agent_id}): {e}")
-        except Exception as e: # Other errors during history saving
-             logging.error(f"Unexpected error saving game history for agents {agent1.agent_id}, {agent2.agent_id}: {e}", exc_info=True)
+        except Exception as e:
+             logging.error(f"Game {game_id}: Unexpected error saving game history for agents: {e}", exc_info=True)
 
-def run_game_round(population: list[Agent], config: dict) -> list[Agent]:
+        game_details_dict["timestamp_end"] = datetime.datetime.now().isoformat()
+        game_details_dict["final_player_A_wealth"] = agent1.wealth
+        game_details_dict["final_player_B_wealth"] = agent2.wealth
+        
+    return game_details_dict
+
+
+def run_game_round(population: list[Agent], config: dict, run_id: str, generation_number: int) -> tuple[list[Agent], list[dict]]:
     """
     Manages a round of games for the entire population.
     Agents are paired, play games, and their states (wealth, history) are updated.
+    Returns the updated population and a list of detailed game dictionaries.
     """
     if not isinstance(population, list):
-        logging.error("run_game_round: Population must be a list. Returning empty list.")
-        return [] 
+        logging.error("run_game_round: Population must be a list.")
+        return [], []
     if not all(isinstance(agent, Agent) for agent in population):
-        logging.error("run_game_round: Population list contains non-Agent elements. Behavior undefined. Returning original list.")
-        return population 
+        logging.error("run_game_round: Population list contains non-Agent elements.")
+        return population, []
     if not population:
-        logging.warning("run_game_round: Called with empty population. Returning empty list.")
-        return []
+        logging.warning("run_game_round: Called with empty population.")
+        return [], []
     if not isinstance(config, dict):
-        logging.error("run_game_round: Config must be a dictionary. Returning original population.")
-        return population 
+        logging.error("run_game_round: Config must be a dictionary.")
+        return population, []
 
-    # Use a more specific config key if available, or a sensible default.
-    # Paper states "exactly three games". Let's make this configurable via 'simulation.games_per_agent_in_round'.
     games_per_agent_target = int(config.get('simulation', {}).get('games_per_agent_in_round', 3))
-    
-    # Pairing strategy: currently only 'random_shuffle' is directly handled below.
-    # config.yaml does not specify 'round:pairing_strategy', so this defaults to 'random_shuffle'.
     pairing_strategy = config.get('round', {}).get('pairing_strategy', 'random_shuffle')
-
     num_agents = len(population)
-    
-    agent_conf = config.get('agent', {})
-    initial_wealth_val = float(agent_conf.get('initial_wealth', 30.0))
+    initial_wealth_val = float(config.get('agent', {}).get('initial_wealth', 30.0))
+
+    all_games_details_this_round: list[dict] = []
 
     # Reset agent states for the round
     for current_agent in population:
         try:
             current_agent.reset_round_state(initial_wealth_val)
         except AttributeError:
-             logging.critical(f"Agent {getattr(current_agent, 'agent_id', 'Unknown')} missing reset_round_state method. Agent class implementation error.")
-             raise # This is a critical error indicating wrong Agent structure.
+             logging.critical(f"Agent {getattr(current_agent, 'agent_id', 'Unknown')} missing reset_round_state method.")
+             raise
 
     if num_agents < 2:
         logging.warning("Not enough agents (<2) for pairing. Skipping game round.")
-        return population
+        return population, [] # Return empty list for game details
 
     if pairing_strategy == 'random_shuffle':
-        # This strategy attempts to each agent plays `games_per_agent_target` games.
-        # Exactness can vary, especially with odd numbers or few iterations.
-        games_played_this_round = {agent.agent_id: 0 for agent in population}
-        
+        games_played_this_round_count = {agent.agent_id: 0 for agent in population}
         total_participations_needed = num_agents * games_per_agent_target
         if total_participations_needed % 2 != 0:
-            logging.warning(f"Target total participations ({total_participations_needed}) is odd. This may lead to unequal game counts.")
+            logging.warning(f"Target total participations ({total_participations_needed}) is odd. May lead to unequal game counts.")
         
-        # Number of unique game instances to be played.
         num_total_games_to_schedule = total_participations_needed // 2
-
-        # Heuristic for max iterations to find pairings.
-        # Can be tuned based on population size and games_per_agent_target.
-        max_iters = num_total_games_to_schedule * 3 + num_agents # enough chances
+        max_iters = num_total_games_to_schedule * 3 + num_agents
         if num_agents <= 3: max_iters = games_per_agent_target * num_agents * 2
 
-
-        actual_games_played_in_round = 0
+        actual_games_played_count = 0
         for iter_num in range(max_iters):
-            # Check if all agents have met their target number of games
-            if all(count >= games_per_agent_target for count in games_played_this_round.values()):
-                logging.info(f"All agents appear to have met target of {games_per_agent_target} games by iteration {iter_num + 1}. Ending pairing phase.")
+            if all(count >= games_per_agent_target for count in games_played_this_round_count.values()):
+                logging.info(f"All agents appear to have met target of {games_per_agent_target} games by iteration {iter_num + 1}.")
                 break
 
             shuffled_indices = list(range(num_agents))
             random.shuffle(shuffled_indices)
-            
-            # Track who has been paired in this specific pass to avoid re-pairing immediately
             was_paired_in_pass = [False] * num_agents
 
-            for i in range(0, num_agents - (num_agents % 2), 2): # Iterate through pairs
+            for i in range(0, num_agents - (num_agents % 2), 2):
                 idx1, idx2 = shuffled_indices[i], shuffled_indices[i+1]
-
-                # Skip if either agent in this potential pair was already paired in this pass
                 if was_paired_in_pass[idx1] or was_paired_in_pass[idx2]:
-                    continue 
+                    continue
 
-                agent_A, agent_B = population[idx1], population[idx2]
+                agent_A_obj, agent_B_obj = population[idx1], population[idx2]
 
-                # Check if both agents still need to play more games this round
-                if games_played_this_round.get(agent_A.agent_id, 0) < games_per_agent_target and \
-                   games_played_this_round.get(agent_B.agent_id, 0) < games_per_agent_target:
+                if games_played_this_round_count.get(agent_A_obj.agent_id, 0) < games_per_agent_target and \
+                   games_played_this_round_count.get(agent_B_obj.agent_id, 0) < games_per_agent_target:
                     
-                    logging.info(f"Pairing Iteration {iter_num + 1}, Game {actual_games_played_in_round + 1}: {agent_A.agent_id} vs {agent_B.agent_id}")
-                    _play_single_game(agent_A, agent_B, config)
+                    game_detail_dict = _play_single_game(agent_A_obj, agent_B_obj, config, run_id, generation_number, actual_games_played_count + 1)
+                    if game_detail_dict: # Only append if a valid detail dict was returned
+                        all_games_details_this_round.append(game_detail_dict)
                     
-                    games_played_this_round[agent_A.agent_id] += 1
-                    games_played_this_round[agent_B.agent_id] += 1
+                    games_played_this_round_count[agent_A_obj.agent_id] += 1
+                    games_played_this_round_count[agent_B_obj.agent_id] += 1
                     was_paired_in_pass[idx1] = True
                     was_paired_in_pass[idx2] = True
-                    actual_games_played_in_round += 1
+                    actual_games_played_count += 1
             
             if iter_num == max_iters - 1:
-                 logging.warning(f"Reached max pairing iterations ({max_iters}). Game counts per agent may not be perfectly uniform at the target of {games_per_agent_target}.")
+                 logging.warning(f"Reached max pairing iterations ({max_iters}). Game counts per agent may not be perfectly uniform at {games_per_agent_target}.")
 
-        logging.info(f"Game round finished. Total distinct games played: {actual_games_played_in_round}.")
+        logging.info(f"Game round finished. Total distinct games played: {actual_games_played_count}.")
         for p_agent in population:
-            final_count = games_played_this_round.get(p_agent.agent_id, 0)
+            final_count = games_played_this_round_count.get(p_agent.agent_id, 0)
             logging.info(f"Agent {p_agent.agent_id} played {final_count} games this round (target: {games_per_agent_target}).")
         
-        # Final check and warning if targets weren't met for some.
-        agents_below_target = [aid for aid, count in games_played_this_round.items() if count < games_per_agent_target]
+        agents_below_target = [aid for aid, count in games_played_this_round_count.items() if count < games_per_agent_target]
         if agents_below_target:
-             logging.warning(f"{len(agents_below_target)} agent(s) did not meet the target of {games_per_agent_target} games: {agents_below_target}")
+             logging.warning(f"{len(agents_below_target)} agent(s) did not meet {games_per_agent_target} games: {agents_below_target}")
 
     else:
-        logging.error(f"Unsupported pairing strategy specified in config: '{pairing_strategy}'")
+        logging.error(f"Unsupported pairing strategy: '{pairing_strategy}'")
         raise NotImplementedError(f"Pairing strategy '{pairing_strategy}' is not implemented.")
 
-    return population
+    return population, all_games_details_this_round
