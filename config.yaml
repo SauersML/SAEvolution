@@ -91,7 +91,7 @@ logging:
 
 state_saving:
   enabled: True
-  interval: 5
+  interval: 1
   directory: simulation_state
 
 api_retries:
