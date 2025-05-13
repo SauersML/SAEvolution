@@ -150,10 +150,12 @@ def _execute_api_call(api_call_func: callable, *args, **kwargs):
     else: # Should not happen if loop runs at least once and fails
         raise TimeoutError(f"API call failed after {max_retries} retries, but no specific exception was captured.")
 
-
 def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | None]:
     """
     Generates a game scenario using the proposer agent and configuration.
+    Employs lenient parsing for XML-like tags, focusing on extracting content
+    between expected tag pairs in sequence, while tolerating junk outside
+    and between these pairs.
     Returns:
         A tuple:
         (dict: {'scenario_text': str, 'role_assignment': dict, 'raw_output': str} or None on failure,
@@ -176,8 +178,6 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     temperature = gen_config.get('temperature', 0.7)
     api_retry_config = config.get('api_retries', {})
 
-    # Add diversification seed to the prompt to prevent caching
-    # Using agent_id and a random UUID for uniqueness per specific call.
     diversification_seed = f"agent_id:{proposer_agent.agent_id}_call_id:{uuid.uuid4().hex[:8]}"
     final_prompt_text = f"{prompt_text_template}\n[{diversification_seed}]"
 
@@ -186,12 +186,14 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     if isinstance(variant_edits, dict) and variant_edits:
         try:
             variant.set(variant_edits)
-        except Exception as e: # Catch potential errors from variant.set()
+        except Exception as e:
             logging.error(f"Error setting variant edits for agent {proposer_agent.agent_id} in generate_scenario: {e}", exc_info=True)
-            # Continue with base variant if edits fail to apply
 
     messages = [{"role": "user", "content": final_prompt_text}]
-    raw_content = None # Initialize for logging in case of early failure
+    llm_raw_output_text = None 
+
+    # Define expected tags locally. XML tags are case-sensitive.
+    expected_tag_sequence = ["context", "roles", "objectives", "win_criteria", "tie_criteria", "proposer_role"]
 
     try:
         logging.debug(f"Attempting scenario generation for agent {proposer_agent.agent_id} with prompt ending: ...{final_prompt_text[-100:]}")
@@ -201,7 +203,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
             model=variant,
             max_completion_tokens=max_tokens,
             temperature=temperature,
-            stream=False, # stream is False for single response
+            stream=False,
             retry_config=api_retry_config
         )
 
@@ -209,31 +211,94 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
              logging.error(f"Invalid or empty response structure received from API for scenario generation (Agent: {proposer_agent.agent_id}).")
              return None, final_prompt_text
 
-        raw_content = response.choices[0].message.get('content', '').strip()
-        logging.debug(f"Raw LLM output for scenario (Agent {proposer_agent.agent_id}):\n{raw_content}")
+        llm_raw_output_text = response.choices[0].message.get('content', '')
+        logging.debug(f"Raw LLM output for scenario (Agent {proposer_agent.agent_id}):\n{llm_raw_output_text}")
 
-        if not raw_content:
+        if not llm_raw_output_text.strip():
              logging.warning(f"Empty content received from API for scenario generation (Agent: {proposer_agent.agent_id}).")
              return None, final_prompt_text
 
-        tags_content = {}
-        # tag names exactly match those in the prompt
-        tag_names = ["context", "roles", "objectives", "win_criteria", "tie_criteria", "proposer_role"]
+        content_to_parse = llm_raw_output_text.strip()
+
+        # Fix common LLM quirk: extraneous periods before tags
+        for tag_name_to_sanitize in expected_tag_sequence:
+            # Period at line start: . <tag>
+            content_to_parse = re.sub(rf"^\s*\.\s*(<{tag_name_to_sanitize}>)", r"\1", content_to_parse, flags=re.MULTILINE)
+            # Period after a previous tag: </prev_tag> . <tag>
+            content_to_parse = re.sub(rf"(>\s*)\.\s*(<{tag_name_to_sanitize}>)", r"\1\2", content_to_parse)
         
+        # Try to isolate the main block of XML from the first expected tag to the last.
+        # This discards prefix/suffix junk outside the core tag sequence.
+        first_tag_opener_str = f"<{expected_tag_sequence[0]}>"
+        last_tag_closer_str = f"</{expected_tag_sequence[-1]}>"
+
+        # Find the first occurrence of the first tag's opener
+        first_tag_match = re.search(re.escape(first_tag_opener_str), content_to_parse)
+        start_slice_index = 0
+        if first_tag_match:
+            start_slice_index = first_tag_match.start()
+        else:
+            logging.warning(f"First expected tag '{first_tag_opener_str}' not found in content by sanitizer. Parsing will proceed on dot-fixed content. Agent: {proposer_agent.agent_id}.")
+            # No change to start_slice_index, will parse from beginning of dot-fixed string.
+
+        # Find the last occurrence of the last tag's closer
+        # We search in the full string (after dot fixing) to find the true end of the block.
+        end_slice_index = len(content_to_parse)
+        # Find all matches and take the one that ends latest.
+        last_tag_matches = list(re.finditer(re.escape(last_tag_closer_str), content_to_parse))
+        if last_tag_matches:
+            # Get the match object that has the maximum end position
+            final_match = max(last_tag_matches, key=lambda m: m.end())
+            end_slice_index = final_match.end()
+        else:
+            logging.warning(f"Last expected tag '{last_tag_closer_str}' not found in content by sanitizer. Parsing will proceed on potentially un-truncated content. Agent: {proposer_agent.agent_id}.")
+            # No change to end_slice_index, will parse up to end of dot-fixed string.
+        
+        # Slice the content to the identified block
+        content_to_parse = content_to_parse[start_slice_index:end_slice_index].strip()
+
+        if not content_to_parse:
+            logging.warning(f"Content for agent {proposer_agent.agent_id} became empty after sanitization/isolation. Original raw: '{llm_raw_output_text[:200]}...'")
+            return None, final_prompt_text
+        
+        if content_to_parse != llm_raw_output_text.strip() and \
+           (llm_raw_output_text.strip().startswith(".") or not (llm_raw_output_text.strip().startswith(first_tag_opener_str) and llm_raw_output_text.strip().endswith(last_tag_closer_str))):
+            # Log if sanitization made a substantive change (beyond simple stripping)
+             logging.info(f"LLM output was pre-processed/sanitized for agent {proposer_agent.agent_id}. Using: '{content_to_parse[:100]}...' to '{content_to_parse[-100:]}'")
+
+        tags_content = {}
+        current_parse_offset = 0 
         parsing_successful = True
-        for tag_name in tag_names:
-            # Using re.IGNORECASE might be too lenient if strict XML case is expected by the LLM.
-            # Using re.DOTALL is crucial for multi-line content within tags.
-            match = re.search(rf"<{tag_name}>(.*?)</{tag_name}>", raw_content, re.DOTALL | re.IGNORECASE)
+
+        for tag_name in expected_tag_sequence:
+            # Regex: <tag_name>(non-greedy content)</tag_name>. Tags are case-sensitive.
+            pattern = re.compile(rf"<{tag_name}>(.*?)</{tag_name}>", re.DOTALL)
+            match = pattern.search(content_to_parse, pos=current_parse_offset)
+            
             if match:
                 tags_content[tag_name] = match.group(1).strip()
+                current_parse_offset = match.end() # Next search starts after this entire matched tag
             else:
-                logging.warning(f"Required tag <{tag_name}> not found in LLM output for scenario (Agent: {proposer_agent.agent_id}). Raw content snippet: {raw_content[:500]}...")
+                logging.warning(
+                    f"Required tag <{tag_name}> not found in sequence in pre-processed LLM output "
+                    f"(Agent: {proposer_agent.agent_id}). Search started at offset {current_parse_offset}. "
+                    f"Relevant content snippet: '{content_to_parse[current_parse_offset : current_parse_offset+150]}...'"
+                )
                 parsing_successful = False
-                break # Stop parsing if a required tag is missing
+                break
         
         if not parsing_successful:
+            logging.debug(f"Pre-processed content at time of parsing failure (Agent {proposer_agent.agent_id}):\n{content_to_parse}")
             return None, final_prompt_text
+        
+        # Check for significant text after all expected tags have been parsed from the isolated block.
+        remaining_text_after_tags = content_to_parse[current_parse_offset:].strip()
+        if remaining_text_after_tags:
+            logging.warning(
+                f"Extraneous content found within the isolated tag block after all expected tags were parsed (Agent: {proposer_agent.agent_id}). "
+                f"Remaining: '{remaining_text_after_tags[:200]}...'. This might violate 'ONLY these tags' rule."
+            )
+            # For maximum leniency on trailing junk within the identified block, we don't fail here.
 
         # Validate content constraints
         if "objective" not in tags_content.get("objectives", "").lower():
@@ -264,24 +329,22 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
         scenario_info_dict = {
             'scenario_text': assembled_scenario_text,
             'role_assignment': role_assignment,
-            'raw_output': raw_content # Store the direct XML-style output from the LLM
+            'raw_output': llm_raw_output_text 
         }
         logging.info(f"Scenario generated and parsed successfully for agent {proposer_agent.agent_id}.")
         return scenario_info_dict, final_prompt_text
 
-    except TimeoutError: # This catches the TimeoutError raised by _execute_api_call after retries
+    except TimeoutError:
          logging.error(f"Timeout generating scenario for agent {proposer_agent.agent_id} after all retries.")
          return None, final_prompt_text
-    except goodfire_exceptions.GoodfireError as e: # Catch Goodfire specific errors that weren't retried or exhausted retries
+    except goodfire_exceptions.GoodfireError as e:
         logging.error(f"Goodfire API error generating scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
         return None, final_prompt_text
-    except Exception as e: # Catch any other unexpected error during the process
+    except Exception as e:
         logging.critical(f"Unexpected critical error generating scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
-        # Log the raw content if available, it might give clues
-        if raw_content is not None:
-            logging.error(f"Raw content at time of critical error (Agent {proposer_agent.agent_id}): {raw_content[:1000]}...")
+        if llm_raw_output_text is not None:
+            logging.error(f"Raw content at time of critical error (Agent {proposer_agent.agent_id}): {llm_raw_output_text[:1000]}...")
         return None, final_prompt_text
-
 
 def generate_agent_response(agent, scenario_data: dict, transcript: list, current_role: str, config: dict) -> tuple[str | None, str | None]:
     """
