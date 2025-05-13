@@ -79,7 +79,7 @@ def load_all_generation_summary_data(run_id: str, state_base_dir: str) -> pd.Dat
         return pd.DataFrame()
 
     all_summaries = []
-    for gen_num in range(1, latest_gen + 1):
+    for gen_num in range(1, latest_gen + 1): # Ensure we iterate up to and including latest_gen
         gen_data = load_generation_data(run_id, gen_num, state_base_dir)
         if gen_data:
             summary = gen_data.get("generation_summary_metrics", {})
@@ -91,17 +91,17 @@ def load_all_generation_summary_data(run_id: str, state_base_dir: str) -> pd.Dat
                 genome_strings = [json.dumps(agent.get("genome", {}), sort_keys=True) for agent in population_state]
                 summary["unique_genomes_approx"] = len(set(genome_strings))
             else:
-                summary["unique_genomes_approx"] = 0 # Or pd.NA if preferred for consistency in DataFrame
+                summary["unique_genomes_approx"] = 0 
             all_summaries.append(summary)
     
     df = pd.DataFrame(all_summaries)
-    # numeric columns are numeric, handling potential all-None cases from JSON
-    for col in ["avg_fitness", "min_fitness", "max_fitness", "avg_wealth", "unique_genomes_approx", "total_games_played_in_generation"]:
+    numeric_cols = ["avg_fitness", "min_fitness", "max_fitness", "avg_wealth", "unique_genomes_approx", "total_games_played_in_generation"]
+    for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors='coerce')
     return df
 
-@st.cache_data(ttl=30)
+@st.cache_data(ttl=30) # Consider reducing ttl for more "live" feel if files update frequently
 def load_games_for_generation(run_id: str, generation_number: int, state_base_dir: str) -> list[dict]:
     if not run_id or generation_number is None: return []
     games_file_path = Path(state_base_dir) / run_id / f"games_generation_{generation_number:04d}.jsonl"
@@ -127,7 +127,7 @@ st.title("Agent Evolution Dashboard")
 
 # Initialize session state
 if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = "📈 Overview & Curves" # Default tab
+    st.session_state.active_tab = "📈 Overview & Curves" 
 if 'selected_game_id_from_agent_detail' not in st.session_state:
     st.session_state.selected_game_id_from_agent_detail = None
 if 'selected_gen_for_game_viewer' not in st.session_state:
@@ -139,14 +139,14 @@ state_dir = st.sidebar.text_input("State Directory Path", value=DEFAULT_STATE_BA
 available_runs = get_available_simulation_runs(state_dir)
 
 if not available_runs:
-    st.sidebar.warning("No simulation runs found. simulations have run and saved state?")
+    st.sidebar.warning("No simulation runs found. Ensure simulations have run and saved state.")
     st.info("No simulation data to display. Please check the 'State Directory Path' and run a simulation.")
     st.stop()
 
 selected_run_id = st.sidebar.selectbox(
     "Select Simulation Run ID",
     options=available_runs,
-    index=0 if available_runs else -1, # Handle empty case, though st.stop above should prevent
+    index=0 if available_runs else -1, 
     help="Choose a simulation run to inspect."
 )
 
@@ -154,6 +154,7 @@ if st.sidebar.button("🔄 Refresh Data", help="Reload all data from the selecte
     st.cache_data.clear()
     st.session_state.selected_game_id_from_agent_detail = None
     st.session_state.selected_gen_for_game_viewer = None
+    # st.session_state.active_tab remains as is, or reset if needed
     st.rerun()
 
 if not selected_run_id:
@@ -170,22 +171,17 @@ if latest_gen_num_for_run is None and selected_run_id:
 
 # --- Tab Navigation ---
 tabs_list = ["📈 Overview & Curves", "🔬 Generation Explorer", "👤 Agent Detail", "📜 Game Viewer"]
-# Default to the session state active tab if it's valid, otherwise first tab
 try:
     default_tab_idx = tabs_list.index(st.session_state.active_tab)
 except ValueError:
     default_tab_idx = 0
     st.session_state.active_tab = tabs_list[0]
 
-
-# st.tabs does not directly support setting the active tab via a parameter after creation.
-# The typical way is to manage content visibility or use st.radio for custom tab-like behavior.
-# For st.tabs, we manage default selections *within* the tabs based on session_state.
-active_tab_ui_selection = st.tabs(tabs_list)
+active_tab_ui_selection = st.tabs(tabs_list) # This returns a list of containers for each tab
 
 
 # --- Tab 1: Overview & Curves ---
-with active_tab_ui_selection[0]: # Corresponds to tabs_list[0]
+with active_tab_ui_selection[0]: 
     st.header(f"Run Overview: {selected_run_id}")
     
     col_overview1, col_overview2 = st.columns(2)
@@ -209,7 +205,7 @@ with active_tab_ui_selection[0]: # Corresponds to tabs_list[0]
             if available_fitness_metrics:
                 fitness_df_melted = all_gen_summary_df[["generation_number"] + available_fitness_metrics].melt(
                     id_vars=["generation_number"], var_name="Metric", value_name="Fitness"
-                ).dropna(subset=['Fitness']) # Drop rows where Fitness is NaN for plotting
+                ).dropna(subset=['Fitness']) 
                 
                 if not fitness_df_melted.empty:
                     fitness_chart = alt.Chart(fitness_df_melted).mark_line(point=True).encode(
@@ -248,8 +244,10 @@ with active_tab_ui_selection[0]: # Corresponds to tabs_list[0]
             if "total_games_played_in_generation" in all_gen_summary_df.columns and all_gen_summary_df["total_games_played_in_generation"].notna().any():
                 games_df_plot = all_gen_summary_df.dropna(subset=['total_games_played_in_generation'])
                 if not games_df_plot.empty:
+                    # FIX: Ensure maxbins is at least 2 for Altair
+                    current_max_bins = max(2, latest_gen_num_for_run if latest_gen_num_for_run is not None and latest_gen_num_for_run > 0 else 2)
                     games_chart = alt.Chart(games_df_plot).mark_bar().encode(
-                        x=alt.X('generation_number:Q', title='Generation', bin=alt.Bin(maxbins=max(1, latest_gen_num_for_run or 1))),
+                        x=alt.X('generation_number:Q', title='Generation', bin=alt.Bin(maxbins=current_max_bins)),
                         y=alt.Y('total_games_played_in_generation:Q', title='Games Played'),
                         tooltip=['generation_number', 'total_games_played_in_generation']
                     ).interactive()
@@ -341,7 +339,7 @@ with active_tab_ui_selection[1]:
             key="gen_explorer_gen_select"
         )
 
-        if selected_gen_num_explorer:
+        if selected_gen_num_explorer is not None: # Check if a selection was made
             gen_data_explorer = load_generation_data(selected_run_id, selected_gen_num_explorer, state_dir)
             if gen_data_explorer:
                 st.subheader(f"Details for Generation {selected_gen_num_explorer}")
@@ -360,26 +358,25 @@ with active_tab_ui_selection[1]:
                     fitness_map_explorer = summary_metrics_explorer.get("fitness_scores_map", {})
                     for agent_s in population_state_explorer:
                         agent_id = agent_s.get("agent_id")
-                        fitness = agent_s.get("fitness_score", fitness_map_explorer.get(agent_id)) # This can be None
+                        fitness = agent_s.get("fitness_score", fitness_map_explorer.get(agent_id)) 
                         agents_df_data.append({
                             "Agent ID": agent_id,
                             "Display ID": get_agent_display_name(agent_id),
                             "Model ID": agent_s.get("model_id"),
                             "Wealth": agent_s.get("wealth"),
-                            "Fitness": fitness, # Keep as float or None
+                            "Fitness": fitness, 
                             "Genome Size": len(agent_s.get("genome", {})),
                         })
                     agents_df_explorer = pd.DataFrame(agents_df_data)
                     
                     if not agents_df_explorer.empty:
                         if "Fitness" in agents_df_explorer.columns and agents_df_explorer["Fitness"].notna().any():
-                            # Rank as float, then convert to nullable integer type
                             agents_df_explorer["Rank (by Fitness)"] = agents_df_explorer["Fitness"].rank(method="dense", ascending=False).astype(pd.Int64Dtype())
                         else:
-                            agents_df_explorer["Rank (by Fitness)"] = pd.NA # Assign NA if no fitness data or all are NaN
+                            agents_df_explorer["Rank (by Fitness)"] = pd.NA 
                         
                         display_columns = ["Rank (by Fitness)", "Display ID", "Wealth", "Fitness", "Genome Size", "Model ID", "Agent ID"]
-                        display_columns = [col for col in display_columns if col in agents_df_explorer.columns] # columns exist
+                        display_columns = [col for col in display_columns if col in agents_df_explorer.columns] 
                         
                         st.dataframe(
                             agents_df_explorer[display_columns], 
@@ -414,7 +411,7 @@ with active_tab_ui_selection[2]:
             key="agent_detail_gen_select"
         )
 
-        if selected_gen_for_agent_detail:
+        if selected_gen_for_agent_detail is not None:
             gen_data_for_agent_tab = load_generation_data(selected_run_id, selected_gen_for_agent_detail, state_dir)
             if gen_data_for_agent_tab and "population_state" in gen_data_for_agent_tab:
                 population_for_agent_select = gen_data_for_agent_tab.get("population_state", [])
@@ -429,8 +426,8 @@ with active_tab_ui_selection[2]:
                     selected_agent_id_detail = st.selectbox(
                         "Select Agent ID", 
                         options=list(agent_id_options_detail.keys()),
-                        format_func=lambda x: agent_id_options_detail[x], # Show display name
-                        index=0, # Simple default
+                        format_func=lambda x: agent_id_options_detail.get(x, x), # Graceful format
+                        index=0 if agent_id_options_detail else -1, 
                         key="agent_detail_agent_select"
                     )
                     
@@ -443,7 +440,7 @@ with active_tab_ui_selection[2]:
                             cols_agent_metrics_detail[0].metric("Wealth", f"{agent_data_detail.get('wealth', 0):.2f}" if agent_data_detail.get('wealth') is not None else "N/A")
                             
                             fitness_val_detail = agent_data_detail.get("fitness_score")
-                            if fitness_val_detail is None: # Try to get from gen summary
+                            if fitness_val_detail is None: 
                                 summary_metrics_agent_tab = gen_data_for_agent_tab.get("generation_summary_metrics", {})
                                 fitness_val_detail = summary_metrics_agent_tab.get("fitness_scores_map", {}).get(selected_agent_id_detail)
                             cols_agent_metrics_detail[1].metric("Fitness", f"{fitness_val_detail:.3f}" if fitness_val_detail is not None else "N/A")
@@ -465,7 +462,7 @@ with active_tab_ui_selection[2]:
                                         bottom_n = genome_df_detail.tail(n_features_to_show) if len(genome_df_detail) > n_features_to_show else pd.DataFrame()
                                         
                                         chart_data_genome = pd.concat([top_n, bottom_n]).drop_duplicates()
-                                        chart_data_genome['Feature UUID Display'] = chart_data_genome['Feature UUID'].apply(lambda x: x[:15] + "..." if len(x) > 15 else x)
+                                        chart_data_genome['Feature UUID Display'] = chart_data_genome['Feature UUID'].apply(lambda x: x[:15] + "..." if isinstance(x, str) and len(x) > 15 else x)
 
                                         genome_chart_detail = alt.Chart(chart_data_genome).mark_bar().encode(
                                             x=alt.X('Activation Value:Q'),
@@ -497,12 +494,12 @@ with active_tab_ui_selection[2]:
                                     
                                     outcome_str_game = game_item.get("adjudication_result", "Unknown")
                                     agent_game_outcome = "N/A"
-                                    if outcome_str_game not in ["Unknown", "Error", "Critical Game Error"] and agent_role_in_game:
+                                    if outcome_str_game not in ["Unknown", "Error", "Critical Game Error", "error"] and agent_role_in_game: # added "error"
                                         if "Tie" in outcome_str_game: agent_game_outcome = "Tie"
                                         elif (outcome_str_game == "Role A Wins" and agent_role_in_game == "Role A") or \
                                              (outcome_str_game == "Role B Wins" and agent_role_in_game == "Role B"):
                                             agent_game_outcome = "Win"
-                                        else: agent_game_outcome = "Loss" # Covers other player win or specific proposer loss
+                                        else: agent_game_outcome = "Loss" 
                                     
                                     games_display_list.append({
                                         "Game ID": game_item.get("game_id"),
@@ -516,7 +513,7 @@ with active_tab_ui_selection[2]:
                                 if games_display_list:
                                     st.markdown("###### Click '👁️ View' to see full details in the Game Viewer tab:")
                                     for row_data in games_display_list:
-                                        game_cols = st.columns((1.5, 1.5, 1, 1, 1, 2.5, 0.5)) # Adjusted column widths
+                                        game_cols = st.columns((1.5, 1.5, 1, 1, 1, 2.5, 0.5)) 
                                         game_cols[0].write(row_data["Game ID"])
                                         game_cols[1].write(row_data["Opponent"])
                                         game_cols[2].write(row_data["Agent Role"] or "N/A")
@@ -530,7 +527,7 @@ with active_tab_ui_selection[2]:
                                             st.session_state.active_tab = "📜 Game Viewer"
                                             st.rerun()
                                 else:
-                                    st.info("No game records to display in table.") # Should be caught by agent_games_list check
+                                    st.info("No game records to display in table for this agent.")
                             else:
                                 st.info(f"No game records found for this agent in generation {selected_gen_for_agent_detail}'s game file.")
                         else:
@@ -552,7 +549,7 @@ with active_tab_ui_selection[3]:
         default_gen_idx_gv = 0
         if pre_selected_gen_gv and pre_selected_gen_gv in gen_numbers_for_games_viewer_tab:
             default_gen_idx_gv = gen_numbers_for_games_viewer_tab.index(pre_selected_gen_gv)
-        elif gen_numbers_for_games_viewer_tab: # Default to latest
+        elif gen_numbers_for_games_viewer_tab: 
             default_gen_idx_gv = len(gen_numbers_for_games_viewer_tab) -1
             
         selected_gen_for_gv = st.selectbox(
@@ -560,10 +557,10 @@ with active_tab_ui_selection[3]:
             options=gen_numbers_for_games_viewer_tab, 
             format_func=lambda x: f"Generation {x}",
             index=default_gen_idx_gv,
-            key="game_viewer_gen_select_key" # Unique key
+            key="game_viewer_gen_select_key" 
         )
 
-        if selected_gen_for_gv:
+        if selected_gen_for_gv is not None:
             games_data_gv = load_games_for_generation(selected_run_id, selected_gen_for_gv, state_dir)
             if not games_data_gv:
                 st.info(f"No game records found for Generation {selected_gen_for_gv}.")
@@ -575,20 +572,18 @@ with active_tab_ui_selection[3]:
                 if pre_selected_game_id_gv and pre_selected_game_id_gv in game_id_options_gv and selected_gen_for_gv == pre_selected_gen_gv:
                     try:
                         default_game_id_idx_gv = game_id_options_gv.index(pre_selected_game_id_gv)
-                    except ValueError: pass # Keep default 0
+                    except ValueError: pass 
                 
-                # Clear pre-selection after use
                 if st.session_state.selected_game_id_from_agent_detail:
                      st.session_state.selected_game_id_from_agent_detail = None
                 if st.session_state.selected_gen_for_game_viewer:
                      st.session_state.selected_gen_for_game_viewer = None
 
-
                 selected_game_id_gv = st.selectbox(
                     "Select Game ID", 
                     options=game_id_options_gv, 
                     index=default_game_id_idx_gv,
-                    key="game_viewer_game_select_key" # Unique key
+                    key="game_viewer_game_select_key" 
                     )
                 
                 if selected_game_id_gv:
@@ -610,24 +605,42 @@ with active_tab_ui_selection[3]:
                         - **Timestamp End:** {game_to_display_gv.get('timestamp_end', 'N/A')}
                         """)
 
-                        with st.expander("📜 Scenario Text", expanded=True):
+                        # Scenario Text and Raw Prompts
+                        with st.expander("📜 Scenario Details", expanded=True):
+                            st.markdown("###### Generated Scenario Text")
                             st.text_area("Scenario", value=game_to_display_gv.get("scenario_text", "N/A"), height=200, disabled=True, label_visibility="collapsed")
+                            
+                            scenario_gen_prompt = game_to_display_gv.get("scenario_generation_prompt")
+                            if scenario_gen_prompt:
+                                st.markdown("###### 🔍 Raw Scenario Generation LLM Input")
+                                st.text_area("Scenario Gen Prompt", value=scenario_gen_prompt, height=150, disabled=True, label_visibility="collapsed")
+                            
+                            scenario_raw_llm_output = game_to_display_gv.get("scenario_raw_llm_output")
+                            if scenario_raw_llm_output:
+                                st.markdown("###### 📄 Raw Scenario Generation LLM Output (e.g., XML)")
+                                st.text_area("Scenario LLM Raw Output", value=scenario_raw_llm_output, height=150, disabled=True, label_visibility="collapsed")
+
 
                         st.markdown("##### 💬 Conversation Transcript")
                         transcript_gv = game_to_display_gv.get("transcript", [])
                         if transcript_gv:
-                            for turn_gv in transcript_gv:
+                            for i, turn_gv in enumerate(transcript_gv):
                                 turn_role_gv = turn_gv.get('role', 'Unknown Role')
                                 speaker_agent_id_gv = turn_gv.get('agent_id', 'Unknown Agent')
                                 content_gv = turn_gv.get('content', '')
                                 
                                 avatar_symbol_gv = "👤" 
-                                if turn_role_gv == pA_role_gv: avatar_symbol_gv = "🧑‍💻"
-                                elif turn_role_gv == pB_role_gv: avatar_symbol_gv = "🤖"
+                                if turn_role_gv == pA_role_gv: avatar_symbol_gv = "🧑‍💻" # Player A
+                                elif turn_role_gv == pB_role_gv: avatar_symbol_gv = "🤖" # Player B
                                 
                                 with st.chat_message(name=turn_role_gv, avatar=avatar_symbol_gv):
                                     st.write(f"**{turn_role_gv} ({get_agent_display_name(speaker_agent_id_gv)})**: ")
                                     st.markdown(content_gv)
+                                    
+                                    raw_turn_prompt = turn_gv.get('raw_llm_prompt')
+                                    if raw_turn_prompt:
+                                        with st.expander(f"🔍 Raw LLM Input for this Turn ({turn_role_gv})", expanded=False):
+                                            st.text_area(f"LLM Input Turn {i+1}", value=raw_turn_prompt, height=150, disabled=True, label_visibility="collapsed", key=f"turn_prompt_{game_to_display_gv.get('game_id')}_{i}")
                         else:
                             st.info("No transcript available for this game.")
 
@@ -638,7 +651,17 @@ with active_tab_ui_selection[3]:
                             st.code(game_to_display_gv.get('adjudication_result', 'N/A'), language=None)
                             if game_to_display_gv.get('defaulted_to_tie_reason'):
                                 st.caption(f"Defaulted Reason: {game_to_display_gv.get('defaulted_to_tie_reason')}")
-                        
+                            
+                            adjudication_prompt = game_to_display_gv.get("adjudication_prompt")
+                            if adjudication_prompt:
+                                with st.expander("🔍 Raw Adjudication LLM Input", expanded=False):
+                                    st.text_area("Adjudication Prompt", value=adjudication_prompt, height=150, disabled=True, label_visibility="collapsed")
+                            
+                            adjudication_raw_output = game_to_display_gv.get("adjudication_raw_llm_output")
+                            if adjudication_raw_output:
+                                with st.expander("📄 Raw Adjudication LLM Output", expanded=False):
+                                    st.text_area("Adjudicator Raw LLM Output", value=adjudication_raw_output, height=100, disabled=True, label_visibility="collapsed")
+
                         with adjudication_cols_gv[1]:
                             bets_gv = game_to_display_gv.get("betting_details") or {}
                             st.markdown(f"""
