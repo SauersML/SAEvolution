@@ -96,6 +96,7 @@ def _determine_bets(agent1: Agent, agent2: Agent, config: dict) -> tuple[float, 
     logging.debug(f"Agent {agent1.agent_id} (wealth {agent1.wealth:.2f}) bets {bet1_val:.2f}. Agent {agent2.agent_id} (wealth {agent2.wealth:.2f}) bets {bet2_val:.2f}.")
     return bet1_val, bet2_val
 
+
 def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, generation_number: int, game_index_in_round: int) -> dict:
     """
     Manages a single game interaction between two agents.
@@ -104,7 +105,7 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
     """
     if not all(isinstance(agent, Agent) for agent in [agent1, agent2]):
         logging.error("Invalid Agent objects provided to _play_single_game.")
-        return {} # Return empty dict on error
+        return {} 
     if not isinstance(config, dict):
         logging.error("Invalid config provided to _play_single_game.")
         return {}
@@ -117,7 +118,7 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         "run_id": run_id,
         "generation_number": generation_number,
         "timestamp_start": timestamp_start,
-        "timestamp_end": None, # Will be set later
+        "timestamp_end": None, 
         "proposer_agent_id": None,
         "opponent_in_proposal_agent_id": None,
         "player_A_id": agent1.agent_id,
@@ -125,16 +126,17 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         "player_A_game_role": None,
         "player_B_game_role": None,
         "scenario_text": "Error: Scenario not processed.",
-        "scenario_raw_llm_output": None,
+        "scenario_generation_prompt": None, # For storing the raw prompt used to generate the scenario
+        "scenario_raw_llm_output": None,    # For storing the direct XML output from the scenario LLM
         "scenario_generation_successful": False,
-        "transcript": [], # Will be populated
-        "adjudication_prompt": None,
-        "adjudication_raw_llm_output": None, # If interface provides it
+        "transcript": [], 
+        "adjudication_prompt": None,        # For storing the raw prompt used for adjudication
+        "adjudication_raw_llm_output": None, # For storing the direct output from the adjudicator LLM
         "adjudication_result": "Error: Adjudication not run.",
         "betting_details": None,
         "wealth_changes": None,
-        "final_player_A_wealth": agent1.wealth, # Initial wealth for now
-        "final_player_B_wealth": agent2.wealth, # Initial wealth for now
+        "final_player_A_wealth": agent1.wealth, 
+        "final_player_B_wealth": agent2.wealth, 
         "defaulted_to_tie_reason": None
     }
 
@@ -150,14 +152,13 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
 
     logging.info(f"Game {game_id}: Proposer: {proposer_obj.agent_id}, Opponent: {opponent_obj.agent_id}. (Full pair: {agent1.agent_id} vs {agent2.agent_id})")
 
-    # For Agent's internal history (simplified compared to full game_details_dict)
     hist_entry_for_agent1 = {
         'game_id': game_id,
         'opponent_id': agent2.agent_id,
         'role_in_proposal': 'proposer' if agent1 == proposer_obj else 'opponent',
         'role_in_game': None,
-        'scenario_text': game_details_dict["scenario_text"], # Will be updated
-        'transcript_snippet': None, # Could be a snippet or reference
+        'scenario_text': game_details_dict["scenario_text"], 
+        'transcript_snippet': None, 
         'bets': None,
         'outcome': 'error',
         'wealth_change': 0.0
@@ -165,29 +166,30 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
 
     actual_winner_agent: Agent | None = None
     actual_loser_agent: Agent | None = None
-    adjudication_final_text = "Error" # Default adjudication text
+    adjudication_final_text = "Error" 
 
     try:
         # 1. Scenario Generation
-        scenario_info = generate_scenario(proposer_obj, config) # generate_scenario should return a dict
+        # generate_scenario now returns: (scenario_info_dict, scenario_generation_prompt_text)
+        # scenario_info_dict contains: {'scenario_text': ..., 'role_assignment': ..., 'raw_output': ...}
+        scenario_info, scenario_gen_prompt = generate_scenario(proposer_obj, config)
+        game_details_dict["scenario_generation_prompt"] = scenario_gen_prompt
 
         if isinstance(scenario_info, dict) and scenario_info.get('scenario_text') and scenario_info.get('role_assignment'):
             game_details_dict["scenario_text"] = scenario_info['scenario_text']
-            game_details_dict["scenario_raw_llm_output"] = scenario_info.get('raw_output') # Assuming interface.py might add this
+            game_details_dict["scenario_raw_llm_output"] = scenario_info.get('raw_output') 
             game_details_dict["scenario_generation_successful"] = True
-            hist_entry_for_agent1['scenario_text'] = scenario_info['scenario_text'] # Update for agent history too
+            hist_entry_for_agent1['scenario_text'] = scenario_info['scenario_text']
             logging.debug(f"Game {game_id}: Scenario generated by {proposer_obj.agent_id}: '{scenario_info['scenario_text'][:100]}...'")
 
-            # Assign roles for the game interaction based on scenario_info
-            role_map = scenario_info['role_assignment'] # Should contain {proposer_id: 'Role A/B'}
+            role_map = scenario_info['role_assignment']
             proposer_game_role = role_map[proposer_obj.agent_id]
             opponent_game_role = 'Role B' if proposer_game_role == 'Role A' else 'Role A'
             
-            # Store game roles for agent1 and agent2
             if agent1 == proposer_obj:
                 game_details_dict["player_A_game_role"] = proposer_game_role
                 game_details_dict["player_B_game_role"] = opponent_game_role
-            else: # agent1 == opponent_obj
+            else: 
                 game_details_dict["player_A_game_role"] = opponent_game_role
                 game_details_dict["player_B_game_role"] = proposer_game_role
             
@@ -196,7 +198,7 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
 
             # 2. Interaction Phase
             interaction_players = [agent1, agent2]
-            random.shuffle(interaction_players) # Randomize who speaks first in the dialogue
+            random.shuffle(interaction_players) 
             
             current_transcript = []
             for turn_idx in range(interaction_turns * 2):
@@ -204,10 +206,19 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
                 current_turn_agent_game_role = game_details_dict["player_A_game_role"] if current_turn_agent == agent1 else game_details_dict["player_B_game_role"]
                 
                 logging.debug(f"Game {game_id} Turn {turn_idx + 1}: Agent {current_turn_agent.agent_id} ({current_turn_agent_game_role}) responding.")
-                # scenario_data_dict for generate_agent_response should be the `scenario_info` from generate_scenario
-                response_txt = generate_agent_response(current_turn_agent, scenario_info, current_transcript, current_turn_agent_game_role, config)
+                
+                # generate_agent_response now returns: (response_text, prompt_text_for_llm)
+                response_txt, agent_action_prompt = generate_agent_response(
+                    current_turn_agent, scenario_info, current_transcript, 
+                    current_turn_agent_game_role, config
+                )
 
-                turn_entry = {"role": current_turn_agent_game_role, "agent_id": current_turn_agent.agent_id, "content": "[Agent failed to provide a response]"}
+                turn_entry = {
+                    "role": current_turn_agent_game_role, 
+                    "agent_id": current_turn_agent.agent_id, 
+                    "content": "[Agent failed to provide a response]",
+                    "raw_llm_prompt": agent_action_prompt # Store the raw prompt for this turn
+                }
                 if response_txt and isinstance(response_txt, str) and response_txt.strip():
                     turn_entry["content"] = response_txt
                     logging.debug(f"Game {game_id}: Agent {current_turn_agent.agent_id} response: '{response_txt[:100]}...'")
@@ -216,14 +227,27 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
                 current_transcript.append(turn_entry)
             
             game_details_dict["transcript"] = current_transcript
-            hist_entry_for_agent1['transcript_snippet'] = f"{len(current_transcript)} turns" # Or first/last turn snippet
+            hist_entry_for_agent1['transcript_snippet'] = f"{len(current_transcript)} turns"
 
             # 3. Adjudication
-            # adjudicate_interaction should accept the scenario_info dict and the transcript
-            adjudication_final_text = adjudicate_interaction(scenario_info, current_transcript, config)
+            # adjudicate_interaction now returns: (cleaned_outcome_string, adjudication_prompt_text)
+            # The first element is the cleaned outcome, the second is the prompt.
+            adjudication_final_text, adjudication_prompt = adjudicate_interaction(
+                scenario_info, current_transcript, config
+            )
             game_details_dict["adjudication_result"] = adjudication_final_text
-            # game_details_dict["adjudication_prompt"] = ... # if interface.py can provide this
-            # game_details_dict["adjudication_raw_llm_output"] = ... # if interface.py can provide this
+            game_details_dict["adjudication_prompt"] = adjudication_prompt
+            
+            # If the adjudication_final_text is not one of the standard outcomes,
+            # it means it might be the raw (or cleaned non-standard) output from the LLM.
+            # We store this in adjudication_raw_llm_output for inspection.
+            # If it *is* a standard outcome, raw_llm_output will be the same.
+            if adjudication_final_text not in ['Role A Wins', 'Role B Wins', 'Tie', 'error'] :
+                 game_details_dict["adjudication_raw_llm_output"] = adjudication_final_text
+            elif adjudication_final_text == "error" and game_details_dict.get("defaulted_to_tie_reason"):
+                 # If it's an error and we have a reason, that reason might contain the raw-ish output.
+                 game_details_dict["adjudication_raw_llm_output"] = game_details_dict["defaulted_to_tie_reason"]
+            # else, it's one of the standard outcomes, or a generic "error" string.
 
             if adjudication_final_text in ['Role A Wins', 'Role B Wins', 'Tie']:
                 if adjudication_final_text == 'Role A Wins':
@@ -233,18 +257,22 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
                     actual_winner_agent = agent1 if game_details_dict["player_A_game_role"] == 'Role B' else agent2
                     actual_loser_agent = agent2 if game_details_dict["player_A_game_role"] == 'Role B' else agent1
                 logging.info(f"Game {game_id}: Adjudication result: {adjudication_final_text}.")
-            else:
+            else: # Handles "error" or other non-standard text from adjudicator
                 logging.warning(f"Game {game_id}: Invalid or non-standard adjudication result: '{adjudication_final_text}'. Game defaulted to Tie.")
                 game_details_dict["defaulted_to_tie_reason"] = f"Adjudication error: {adjudication_final_text}"
-                # actual_winner_agent and actual_loser_agent remain None -> Tie
+                if adjudication_final_text != "error": # Store the non-standard output if it wasn't just "error"
+                    game_details_dict["adjudication_raw_llm_output"] = adjudication_final_text
+
 
         else: # Scenario generation failed
+            # scenario_info might be None or not a dict with the expected keys
             game_details_dict["scenario_text"] = "Scenario generation failed or returned invalid data."
+            # game_details_dict["scenario_generation_prompt"] would still be set from the attempt
             game_details_dict["scenario_generation_successful"] = False
             logging.warning(f"Game {game_id}: Scenario generation failed. Proposer ({proposer_obj.agent_id}) loses by default.")
             actual_winner_agent, actual_loser_agent = opponent_obj, proposer_obj
-            game_details_dict["defaulted_to_tie_reason"] = "Scenario generation failure (proposer loss)" # Or specific outcome
-            game_details_dict["adjudication_result"] = "Proposer Loss (Scenario Fail)" # More specific than "Error"
+            game_details_dict["defaulted_to_tie_reason"] = "Scenario generation failure (proposer loss)" 
+            game_details_dict["adjudication_result"] = "Proposer Loss (Scenario Fail)" 
 
 
         # 4. Determine Bets
@@ -255,32 +283,29 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         # 5. Apply Wealth Change and Finalize Game Details
         wealth_A_change, wealth_B_change = 0.0, 0.0
         if actual_winner_agent and actual_loser_agent:
-            winner_bet = bet_agent1 if actual_winner_agent == agent1 else bet_agent2
-            loser_bet = bet_agent2 if actual_winner_agent == agent1 else bet_agent1 # This logic seems off, should be loser's bet
-            
-            # Corrected bet passing:
-            gain, loss = _apply_wealth_change(actual_winner_agent, actual_loser_agent, 
-                                              bet_agent1 if actual_winner_agent == agent1 else bet_agent2, # winner's bet amount
-                                              bet_agent1 if actual_loser_agent == agent1 else bet_agent2,   # loser's bet amount
-                                              max_loss_mult, max_gain_ratio_val)
+            gain, loss = _apply_wealth_change(
+                actual_winner_agent, actual_loser_agent, 
+                bet_agent1 if actual_winner_agent == agent1 else bet_agent2, 
+                bet_agent1 if actual_loser_agent == agent1 else bet_agent2,   
+                max_loss_mult, max_gain_ratio_val
+            )
 
             if actual_winner_agent == agent1:
                 wealth_A_change = gain
                 wealth_B_change = -loss
                 hist_entry_for_agent1['outcome'] = 'win'
-            else: # actual_winner_agent == agent2
+            else: 
                 wealth_A_change = -loss
                 wealth_B_change = gain
                 hist_entry_for_agent1['outcome'] = 'loss'
             hist_entry_for_agent1['wealth_change'] = wealth_A_change
-        else: # Tie
+        else: # Tie (or error that defaulted to tie)
             hist_entry_for_agent1['outcome'] = 'tie'
             hist_entry_for_agent1['wealth_change'] = 0.0
-            # adjudication_result might already be 'Tie' or an error message
             if not game_details_dict["defaulted_to_tie_reason"]:
                 game_details_dict["defaulted_to_tie_reason"] = "Adjudicated as Tie"
-            if adjudication_final_text != "Tie": # If it wasn't explicitly a Tie from adjudicator
-                game_details_dict["adjudication_result"] = "Tie (Defaulted)"
+            if game_details_dict["adjudication_result"] not in ["Tie", "Role A Wins", "Role B Wins"]: # If it wasn't explicitly a Tie from adjudicator
+                 game_details_dict["adjudication_result"] = "Tie (Defaulted)"
 
 
         game_details_dict["wealth_changes"] = {"player_A_wealth_change": wealth_A_change, "player_B_wealth_change": wealth_B_change}
@@ -292,8 +317,11 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         hist_entry_for_agent1['wealth_change'] = 0.0
         game_details_dict["adjudication_result"] = "Critical Game Error"
         game_details_dict["defaulted_to_tie_reason"] = f"Critical error: {str(e)[:100]}"
+        # Ensure prompt fields are at least None if an error occurred before they were set
+        game_details_dict.setdefault("scenario_generation_prompt", None)
+        game_details_dict.setdefault("adjudication_prompt", None)
+
     finally:
-        # 6. Record Game History for agents (internal)
         try:
             agent1.add_game_result(copy.deepcopy(hist_entry_for_agent1))
             hist_entry_for_agent2 = copy.deepcopy(hist_entry_for_agent1)
@@ -313,6 +341,7 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         game_details_dict["final_player_B_wealth"] = agent2.wealth
         
     return game_details_dict
+
 
 
 def run_game_round(population: list[Agent], config: dict, run_id: str, generation_number: int) -> tuple[list[Agent], list[dict]]:
