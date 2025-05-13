@@ -237,6 +237,7 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
 
             # 2. Interaction Phase
             current_transcript = []
+            interaction_players_ordered = [agent1, agent2]
             random.shuffle(interaction_players_ordered)
 
             for turn_idx in range(interaction_turns * 2): # Each agent gets `interaction_turns`
