@@ -107,7 +107,9 @@ def save_generation_checkpoint(
     for agent in population:
         agent_dict = agent.to_dict()
         # Ensure fitness is captured if available (calculate_fitness should ideally store it on agent or pass it here)
-        if not hasattr(agent, 'current_fitness_score'): # Placeholder for actual attribute name
+        if hasattr(agent, 'current_fitness_score'): 
+            agent_dict['fitness_score'] = agent.current_fitness_score
+        elif 'fitness_scores_map' in generation_summary_metrics: # Fallback if not directly on agent
             agent_dict['fitness_score'] = generation_summary_metrics.get('fitness_scores_map', {}).get(agent.agent_id, None)
         population_data_for_save.append(agent_dict)
 
@@ -224,7 +226,9 @@ def run_simulation(args):
     # --- Initial Config Loading (might be overridden by checkpoint) ---
     primary_config = load_config(args.config_file)
     if primary_config is None and not args.resume_run_id and not args.resume_latest:
-        print(f"Error: Main config file '{args.config_file}' not found and not resuming. Exiting.")
+        # Use a basic logger for this pre-setup error message
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.error(f"Error: Main config file '{args.config_file}' not found and not resuming. Exiting.")
         return
 
     # --- Determine Run Mode and Load State if Resuming ---
@@ -233,26 +237,40 @@ def run_simulation(args):
     simulation_run_id: str = ""
     config: dict = {} # This will hold the definitive config for the run
 
-    state_base_dir_from_config = (primary_config or {}).get('state_saving', {}).get('directory', 'simulation_state')
-    log_dir_base_from_config = (primary_config or {}).get('logging', {}).get('log_directory', 'logs')
+    # Determine base directories from primary_config if available, else use defaults
+    # These might be updated if resuming and config snapshot has different paths
+    state_base_dir = (primary_config or {}).get('state_saving', {}).get('directory', 'simulation_state')
+    log_dir_base = (primary_config or {}).get('logging', {}).get('log_directory', 'logs')
 
 
     resuming = False
     if args.resume_run_id:
-        checkpoint_data = load_checkpoint(args.resume_run_id, state_base_dir_from_config)
+        # Initial basic logging if setup_logging hasn't run yet
+        if not logging.getLogger().hasHandlers():
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.info(f"Attempting to resume run ID: {args.resume_run_id}")
+        checkpoint_data = load_checkpoint(args.resume_run_id, state_base_dir)
         if checkpoint_data:
             current_population, start_generation, config, simulation_run_id = checkpoint_data
             resuming = True
+            # Update state_base_dir and log_dir_base from loaded config if they exist and differ
+            state_base_dir = config.get('state_saving', {}).get('directory', state_base_dir)
+            log_dir_base = config.get('logging', {}).get('log_directory', log_dir_base)
         else:
             logging.error(f"Failed to load checkpoint for run ID '{args.resume_run_id}'. Exiting.")
             return
     elif args.resume_latest:
-        run_id_to_resume = find_latest_run_id(state_base_dir_from_config)
+        if not logging.getLogger().hasHandlers():
+            logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+        logging.info("Attempting to resume the latest run.")
+        run_id_to_resume = find_latest_run_id(state_base_dir)
         if run_id_to_resume:
-            checkpoint_data = load_checkpoint(run_id_to_resume, state_base_dir_from_config)
+            checkpoint_data = load_checkpoint(run_id_to_resume, state_base_dir)
             if checkpoint_data:
                 current_population, start_generation, config, simulation_run_id = checkpoint_data
                 resuming = True
+                state_base_dir = config.get('state_saving', {}).get('directory', state_base_dir)
+                log_dir_base = config.get('logging', {}).get('log_directory', log_dir_base)
             else:
                 logging.error(f"Failed to load latest checkpoint for run ID '{run_id_to_resume}'. Exiting.")
                 return
@@ -262,12 +280,13 @@ def run_simulation(args):
 
     if not resuming: # New simulation
         if primary_config is None: # Should have been caught, but defensive
-            print("Cannot start a new simulation without a valid config file. Exiting.")
+            # This case is tricky as logging might not be set up.
+            print("CRITICAL: Cannot start a new simulation without a valid primary config file. Exiting.")
             return
         config = primary_config
         simulation_run_id = f"sim_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
         log_level = config.get('logging', {}).get('log_level', 'INFO')
-        setup_logging(log_level, log_dir_base_from_config, simulation_run_id, resume_mode=False)
+        setup_logging(log_level, log_dir_base, simulation_run_id, resume_mode=False) # log_dir_base from primary
         logging.info(f"Starting new simulation run: {simulation_run_id}")
         logging.info(f"Configuration loaded: {config}")
 
@@ -278,8 +297,7 @@ def run_simulation(args):
             return
         logging.info(f"Initial population of {len(current_population)} agents created.")
         
-        # Save initial config snapshot for this new run
-        run_dir = Path(state_base_dir_from_config) / simulation_run_id
+        run_dir = Path(state_base_dir) / simulation_run_id # state_base_dir from primary
         run_dir.mkdir(parents=True, exist_ok=True)
         config_snapshot_path = run_dir / "config_snapshot.json"
         try:
@@ -291,10 +309,7 @@ def run_simulation(args):
 
     else: # Resuming simulation
         log_level = config.get('logging', {}).get('log_level', 'INFO') # Config is from checkpoint
-        # log_dir_base_from_config may not match what's in loaded config if primary_config was None
-        # Safest to use the dir from the loaded config if available, else the one from primary_config
-        loaded_log_dir_base = config.get('logging', {}).get('log_directory', log_dir_base_from_config)
-        setup_logging(log_level, loaded_log_dir_base, simulation_run_id, resume_mode=True)
+        setup_logging(log_level, log_dir_base, simulation_run_id, resume_mode=True) # log_dir_base from checkpoint or primary
         logging.info(f"Resuming simulation run: {simulation_run_id} from generation {start_generation}")
         logging.info(f"Resumed with configuration: {config}")
 
@@ -302,81 +317,95 @@ def run_simulation(args):
     # --- Simulation Parameters from definitive config ---
     sim_config_params = config.get('simulation', {})
     num_generations = sim_config_params.get('num_generations', 10)
-    # population_size is mainly for initial setup, subsequent gens maintain size via evolution logic
 
     state_saving_config = config.get('state_saving', {})
-    save_state_enabled = state_saving_config.get('enabled', True) # Default to True for dashboarding
-    save_state_interval = state_saving_config.get('interval', 1)  # Save every generation for dashboard
-    # state_base_dir is already determined (state_base_dir_from_config)
+    save_state_enabled = state_saving_config.get('enabled', True)
+    save_state_interval = state_saving_config.get('interval', 1)
+    # state_base_dir is already determined
+
+    last_successfully_saved_generation = start_generation -1 
 
     # --- Main Simulation Loop ---
     for gen_num in range(start_generation, num_generations + 1):
         logging.info(f"--- Starting Generation {gen_num}/{num_generations} for run {simulation_run_id} ---")
-        generation_game_details = [] # To store details of all games in this generation
+        generation_game_details = [] 
 
         try:
-            # run_game_round now needs to return (updated_population, list_of_game_detail_dicts)
-            population_after_round, generation_game_details = run_game_round(current_population, config)
+            # *** THE FIX IS HERE: Pass simulation_run_id and gen_num ***
+            population_after_round, generation_game_details = run_game_round(
+                current_population, config, simulation_run_id, gen_num
+            )
             
             if not isinstance(population_after_round, list) or len(population_after_round) != len(current_population):
-                 logging.error(f"Population state invalid after game round in Generation {gen_num}. Aborting.")
+                 logging.error(f"Population state invalid after game round in Generation {gen_num}. Expected {len(current_population)} agents, got {len(population_after_round)}. Aborting.")
                  break
             logging.info(f"Completed game round for Generation {gen_num}. {len(generation_game_details)} games played.")
 
             fitness_scores_list = calculate_fitness(population_after_round)
-            # Store fitness on agents or create a map for saving
             fitness_scores_map = {}
-            for agent, score in zip(population_after_round, fitness_scores_list):
-                agent.current_fitness_score = score # Assuming Agent class can store this
-                fitness_scores_map[agent.agent_id] = score
+            if len(population_after_round) == len(fitness_scores_list):
+                for agent, score in zip(population_after_round, fitness_scores_list):
+                    if hasattr(agent, 'agent_id'): # Ensure agent has an ID for the map
+                         agent.current_fitness_score = score # Store on agent instance for easier access
+                         fitness_scores_map[agent.agent_id] = score
+                    else:
+                        logging.warning("Agent found without agent_id during fitness score mapping.")
+            else:
+                logging.error(f"Mismatch between population size ({len(population_after_round)}) and fitness scores ({len(fitness_scores_list)}) in Gen {gen_num}. Cannot map fitness scores.")
             
             if not isinstance(fitness_scores_list, list) or len(fitness_scores_list) != len(population_after_round):
-                 logging.error(f"Fitness scores invalid after calculation in Generation {gen_num}. Aborting.")
+                 logging.error(f"Fitness scores invalid after calculation in Generation {gen_num}. Expected {len(population_after_round)} scores, got {len(fitness_scores_list)}. Aborting.")
                  break
             logging.info(f"Calculated fitness for Generation {gen_num}.")
             
             next_population = evolve_population(population_after_round, fitness_scores_list, config)
-            if not isinstance(next_population, list) or len(next_population) != len(population_after_round):
-                 logging.error(f"Population state invalid after evolution in Generation {gen_num}. Aborting.")
+            if not isinstance(next_population, list) or len(next_population) != len(population_after_round): # Should maintain pop size
+                 logging.error(f"Population state invalid after evolution in Generation {gen_num}. Expected {len(population_after_round)} agents, got {len(next_population)}. Aborting.")
                  break
             logging.info(f"Population evolved for Generation {gen_num}.")
 
             current_population = next_population
+            last_successfully_saved_generation = gen_num # Mark this generation as completed
 
             # --- State Saving / Checkpointing ---
             if save_state_enabled and (gen_num % save_state_interval == 0 or gen_num == num_generations):
                 generation_summary_metrics = {
-                    "avg_fitness": sum(fitness_scores_list) / len(fitness_scores_list) if fitness_scores_list else 0,
+                    "avg_fitness": (sum(fitness_scores_list) / len(fitness_scores_list)) if fitness_scores_list else 0,
                     "max_fitness": max(fitness_scores_list) if fitness_scores_list else 0,
                     "min_fitness": min(fitness_scores_list) if fitness_scores_list else 0,
-                    "avg_wealth": sum(a.wealth for a in current_population) / len(current_population) if current_population else 0,
+                    "avg_wealth": (sum(a.wealth for a in current_population) / len(current_population)) if current_population else 0,
                     "total_games_played_in_generation": len(generation_game_details),
-                    "fitness_scores_map": fitness_scores_map # For dashboard to easily get per-agent fitness
+                    "fitness_scores_map": fitness_scores_map 
                 }
                 save_generation_checkpoint(
                     simulation_run_id=simulation_run_id,
-                    config_snapshot=config, # The definitive config for this run
+                    config_snapshot=config,
                     generation_number=gen_num,
                     population=current_population,
                     game_details_for_generation=generation_game_details,
-                    rng_state=list(random.getstate()), # Convert tuple to list for JSON
+                    rng_state=list(random.getstate()),
                     generation_summary_metrics=generation_summary_metrics,
-                    state_base_dir=state_base_dir_from_config
+                    state_base_dir=state_base_dir # Use the determined state_base_dir
                 )
 
         except KeyboardInterrupt:
              logging.warning(f"Simulation run {simulation_run_id} interrupted by user during Generation {gen_num}.")
-             logging.info("Attempting to save state for the last *completed* generation if applicable...")
-             # The save_generation_checkpoint is already at the end of a successful generation loop.
-             # If interrupt happens before that, it relies on the *previous* generation's save.
-             # If it happens *after* save but *before* next loop, current gen is saved.
-             # This behavior is generally fine.
+             logging.info(f"Last successfully completed and potentially saved generation was: {last_successfully_saved_generation if last_successfully_saved_generation >= (start_generation if resuming else 1) else 'None this session'}")
              break
         except Exception as e:
             logging.critical(f"Critical error during Generation {gen_num} of run {simulation_run_id}: {e}", exc_info=True)
             break
+        finally:
+            # This block will execute whether the try block completed normally or due to an exception/break.
+            # We can log the effective end generation here.
+            # 'gen_num' will hold the value of the generation that was being processed or just finished.
+            # If the loop didn't even start (e.g. error in init), gen_num might not be defined.
+            current_gen_for_log = locals().get('gen_num', start_generation if resuming else 0)
 
-    logging.info(f"Simulation run {simulation_run_id} finished or stopped at generation {gen_num if 'gen_num' in locals() else start_generation-1}.")
+
+    # Final log message outside the loop
+    final_gen_message_val = current_gen_for_log if 'current_gen_for_log' in locals() else (start_generation -1 if resuming else 0)
+    logging.info(f"Simulation run {simulation_run_id} finished or stopped. Last processed generation was {final_gen_message_val}.")
 
 
 if __name__ == "__main__":
@@ -402,6 +431,7 @@ if __name__ == "__main__":
     cli_args = parser.parse_args()
 
     if cli_args.resume_run_id and cli_args.resume_latest:
+        # Basic print as logging might not be set up
         print("Error: Cannot use both --resume-run-id and --resume-latest. Choose one.")
     else:
         run_simulation(cli_args)
