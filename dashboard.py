@@ -307,13 +307,6 @@ with tab3:
                             if genome:
                                 genome_df = pd.DataFrame(list(genome.items()), columns=['Feature UUID', 'Activation'])
                                 st.dataframe(genome_df, height=200, use_container_width=True)
-                                # Consider a bar chart for genome if not too many features
-                                # genome_chart = alt.Chart(genome_df.head(20)).mark_bar().encode( # Show top N
-                                #     x='Activation:Q',
-                                #     y=alt.Y('Feature UUID:N', sort='-x'),
-                                #     tooltip=['Feature UUID', 'Activation']
-                                # ).interactive()
-                                # st.altair_chart(genome_chart, use_container_width=True)
                             else:
                                 st.info("No genome data for this agent.")
 
@@ -326,8 +319,8 @@ with tab3:
                             if agent_games:
                                 games_display_data = []
                                 for game in agent_games:
-                                    outcome_str = game.get("adjudication_result", "Unknown")
-                                    wealth_c = game.get("wealth_changes", {})
+                                    outcome_str = game.get("adjudication_result", "Unknown")                                          
+                                    wealth_c = game.get("wealth_changes") or {}
                                     agent_wealth_change = wealth_c.get("player_A_wealth_change") if game.get("player_A_id") == selected_agent_id else wealth_c.get("player_B_wealth_change")
                                     opponent_id = game.get("player_B_id") if game.get("player_A_id") == selected_agent_id else game.get("player_A_id")
                                     games_display_data.append({
@@ -408,10 +401,10 @@ with tab4:
                         if game_to_display.get('defaulted_to_tie_reason'):
                             st.caption(f"Defaulted Reason: {game_to_display.get('defaulted_to_tie_reason')}")
                         
-                        bets = game_to_display.get("betting_details", {})
+                        bets = game_to_display.get("betting_details") or {}
                         st.markdown(f"- **Player A Bet:** {bets.get('player_A_bet', 'N/A')}, **Player B Bet:** {bets.get('player_B_bet', 'N/A')}")
-                        
-                        wealth_c = game_to_display.get("wealth_changes", {})
+
+                        wealth_c = game_to_display.get("wealth_changes") or {}
                         st.markdown(f"- **Player A Wealth Change:** {wealth_c.get('player_A_wealth_change', 'N/A')}")
                         st.markdown(f"- **Player B Wealth Change:** {wealth_c.get('player_B_wealth_change', 'N/A')}")
 
