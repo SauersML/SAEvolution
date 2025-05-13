@@ -201,7 +201,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
             model=variant,
             max_completion_tokens=max_tokens,
             temperature=temperature,
-            stream=False, # Ensure stream is False for single response
+            stream=False, # stream is False for single response
             retry_config=api_retry_config
         )
 
@@ -217,7 +217,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
              return None, final_prompt_text
 
         tags_content = {}
-        # Ensure tag names exactly match those in the prompt
+        # tag names exactly match those in the prompt
         tag_names = ["context", "roles", "objectives", "win_criteria", "tie_criteria", "proposer_role"]
         
         parsing_successful = True
@@ -368,19 +368,19 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         logging.critical(f"Unexpected critical error generating response for agent {agent.agent_id}: {e}", exc_info=True)
         return None, prompt_text_for_llm
 
-
 def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict) -> tuple[str, str | None]:
     """
     Adjudicates the game interaction.
     Returns:
-        A tuple: (str: adjudication outcome e.g., 'Role A Wins', 'Tie', 'error',
+        A tuple: (str: adjudication outcome e.g., 'Role A Wins', 'Tie', 'error' (though 'error' becomes 'Tie' here in most cases),
                   str: The prompt_text used for adjudication or None on early failure)
     """
+
     if not all(isinstance(arg, exp_type) for arg, exp_type in [
         (scenario_data, dict), (transcript, list), (config, dict)
     ]):
-        logging.error(f"adjudicate_interaction: Invalid argument types. Scenario: {type(scenario_data)}, etc.")
-        return "error", None
+        logging.error(f"adjudicate_interaction: Invalid argument types. Scenario: {type(scenario_data)}, Transcript: {type(transcript)}, Config: {type(config)}")
+        return "Tie", None # Default to Tie on bad input types, log error
 
     client = get_goodfire_client(config)
     adjudicator_config = config.get('adjudicator', {})
@@ -388,12 +388,12 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict) 
     prompt_template = adjudicator_config.get('prompt_template',
         "Analyze the interaction based strictly on the rules and objectives defined in the scenario description.\n\nScenario Description:\n{scenario}\n\nInteraction Transcript:\n{transcript}\n\nTask: Based ONLY on the scenario's win criteria and the interaction, determine the outcome. Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.")
     max_tokens = adjudicator_config.get('max_tokens', 20)
-    temperature = adjudicator_config.get('temperature', 0.0) # Low temp for deterministic adjudication
+    temperature = adjudicator_config.get('temperature', 0.7)
     api_retry_config = config.get('api_retries', {})
 
     if not model_id:
-        logging.error("Adjudicator model ID not specified in configuration. Cannot adjudicate.")
-        return "error", None
+        logging.error("Adjudicator model ID not specified in configuration. Cannot adjudicate. Defaulting to Tie.")
+        return "Tie", None
 
     scenario_text = scenario_data.get('scenario_text', '[Scenario text missing from input scenario_data]')
     transcript_text = "\n".join([f"{msg.get('role', 'UnknownRole')}: {msg.get('content', '[empty_content]')}" for msg in transcript]) \
@@ -403,11 +403,11 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict) 
     try:
         adjudication_prompt_text = prompt_template.format(scenario=scenario_text, transcript=transcript_text)
     except KeyError as ke:
-        logging.error(f"Missing key '{ke}' in prompt_template for adjudication. Template: '{prompt_template}'")
-        return "error", prompt_template
+        logging.error(f"Missing key '{ke}' in prompt_template for adjudication. Template: '{prompt_template}'. Defaulting to Tie.")
+        return "Tie", prompt_template # Return template itself if formatting fails
 
     messages = [{"role": "user", "content": adjudication_prompt_text}]
-    raw_adjudicator_llm_output = "[Adjudicator LLM output not captured]"
+    raw_adjudicator_llm_output = "[Adjudicator LLM output not captured before potential error]"
 
     try:
         logging.debug(f"Attempting adjudication. Prompt: {adjudication_prompt_text[:500]}...")
@@ -422,43 +422,59 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict) 
         )
 
         if not response or not response.choices or not isinstance(response.choices[0].message, dict):
-             logging.error("Invalid or empty response structure received from adjudicator API.")
-             return "error", adjudication_prompt_text
+             logging.error("Invalid or empty response structure received from adjudicator API. Defaulting to Tie.")
+             return "Tie", adjudication_prompt_text
 
         raw_adjudicator_llm_output = response.choices[0].message.get('content', '')
-        result_text = raw_adjudicator_llm_output.strip().replace('.', '') # Remove periods for exact match
+        cleaned_output = raw_adjudicator_llm_output.strip()
 
-        valid_outcomes = ['Role A Wins', 'Role B Wins', 'Tie']
-        if result_text in valid_outcomes:
-            logging.info(f"Adjudication successful: {result_text}")
-            return result_text, adjudication_prompt_text
+        if not cleaned_output:
+            logging.error(f"Adjudicator returned empty or whitespace-only output. Raw: '{raw_adjudicator_llm_output}'. Defaulting to Tie.")
+            return "Tie", adjudication_prompt_text
+
+        output_lower = cleaned_output.lower()
+
+        # Define keywords for each outcome (case-insensitive)
+        # Using lists of keywords for flexibility (e.g., "role a wins", "a wins")
+        keywords_a_wins = ["role a wins", "a wins", "player a wins"]
+        keywords_b_wins = ["role b wins", "b wins", "player b wins"]
+        keywords_tie = ["tie", "draw", "stalemate"]
+
+        # Check presence of keywords
+        contains_a_wins = any(kw in output_lower for kw in keywords_a_wins)
+        contains_b_wins = any(kw in output_lower for kw in keywords_b_wins)
+        contains_tie = any(kw in output_lower for kw in keywords_tie)
+
+        # Exclusive "contains one and not the others" logic
+        if contains_a_wins and not contains_b_wins and not contains_tie:
+            logging.info(f"Adjudication determined: 'Role A Wins'. Raw: '{raw_adjudicator_llm_output}'")
+            return 'Role A Wins', adjudication_prompt_text
+        elif contains_b_wins and not contains_a_wins and not contains_tie:
+            logging.info(f"Adjudication determined: 'Role B Wins'. Raw: '{raw_adjudicator_llm_output}'")
+            return 'Role B Wins', adjudication_prompt_text
+        elif contains_tie and not contains_a_wins and not contains_b_wins:
+            logging.info(f"Adjudication determined: 'Tie'. Raw: '{raw_adjudicator_llm_output}'")
+            return 'Tie', adjudication_prompt_text
         else:
-            logging.warning(f"Adjudicator returned non-standard text: '{result_text}' (Raw: '{raw_adjudicator_llm_output}'). Attempting relaxed matching.")
-            # Relaxed matching
-            result_text_lower = result_text.lower()
-            if "role a wins" in result_text_lower:
-                logging.info("Adjudication relaxed match: 'Role A Wins'")
-                return 'Role A Wins', adjudication_prompt_text
-            if "role b wins" in result_text_lower:
-                logging.info("Adjudication relaxed match: 'Role B Wins'")
-                return 'Role B Wins', adjudication_prompt_text
-            if "tie" in result_text_lower or "draw" in result_text_lower : # Common synonyms
-                logging.info("Adjudication relaxed match: 'Tie'")
-                return 'Tie', adjudication_prompt_text
-            
-            logging.error(f"Adjudicator response cleanup failed. Original: '{result_text}', Raw: '{raw_adjudicator_llm_output}'. Defaulting to error.")
-            return "error", adjudication_prompt_text # Return the actual non-standard text for logging if needed
+            # This case covers:
+            # 1. Contains none of the keywords.
+            # 2. Contains conflicting keywords (e.g., "a wins" and "tie").
+            logging.warning(
+                f"Adjudicator response is ambiguous or does not clearly indicate a single outcome. "
+                f"Output: '{cleaned_output}' (Raw: '{raw_adjudicator_llm_output}'). "
+                f"Detected flags: A_wins={contains_a_wins}, B_wins={contains_b_wins}, Tie={contains_tie}. Defaulting to Tie."
+            )
+            return "Tie", adjudication_prompt_text
 
     except TimeoutError:
-         logging.error("Timeout during adjudication after all retries.")
-         return "error", adjudication_prompt_text
+         logging.error(f"Timeout during adjudication after all retries. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'")
+         return "Tie", adjudication_prompt_text
     except goodfire_exceptions.GoodfireError as e:
-        logging.error(f"Goodfire API error during adjudication: {e}", exc_info=True)
-        return "error", adjudication_prompt_text
+        logging.error(f"Goodfire API error during adjudication: {e}. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'", exc_info=True)
+        return "Tie", adjudication_prompt_text
     except Exception as e:
-        logging.critical(f"Unexpected critical error during adjudication: {e}", exc_info=True)
-        return "error", adjudication_prompt_text
-
+        logging.critical(f"Unexpected critical error during adjudication: {e}. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'", exc_info=True)
+        return "Tie", adjudication_prompt_text
 
 def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant_or_model_id, top_k: int, config: dict) -> tuple[list | None, list | None]:
     """
