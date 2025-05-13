@@ -1,10 +1,10 @@
 """
-This module isolates all direct communication with external Large Language 
-Model APIs. It provides the mechanisms for generating text responses while 
-incorporating behavioral steering based on an agent's internal feature state, 
-performing contrastive analyses to identify features differentiating between 
-interaction sets, and requesting external judgments on game outcomes. It also 
-handles low-level details like API key management, request/response formatting, 
+This module isolates all direct communication with external Large Language
+Model APIs. It provides the mechanisms for generating text responses while
+incorporating behavioral steering based on an agent's internal feature state,
+performing contrastive analyses to identify features differentiating between
+interaction sets, and requesting external judgments on game outcomes. It also
+handles low-level details like API key management, request/response formatting,
 and error handling for these external service interactions.
 """
 
@@ -154,16 +154,34 @@ def generate_scenario(proposer_agent, config: dict):
              logging.warning(f"Empty content received from API for agent {proposer_agent.agent_id}.")
              return None
 
+        # Strip markdown code fences if present
+        cleaned_content = raw_content
+        if cleaned_content.startswith("```json"):
+            # Remove ```json prefix
+            cleaned_content = cleaned_content[len("```json"):].strip()
+            # Remove ``` suffix
+            if cleaned_content.endswith("```"):
+                cleaned_content = cleaned_content[:-len("```")].strip()
+        elif cleaned_content.startswith("```"): # Fallback for just ``` prefix and ``` suffix
+            # Remove ``` prefix
+            cleaned_content = cleaned_content[len("```"):].strip()
+            # Remove ``` suffix
+            if cleaned_content.endswith("```"):
+                cleaned_content = cleaned_content[:-len("```")].strip()
+
         try:
-            parsed_json = json.loads(raw_content)
+            # Use cleaned_content for parsing
+            parsed_json = json.loads(cleaned_content)
             if isinstance(parsed_json, dict) and \
                isinstance(parsed_json.get('scenario_text'), str) and \
                parsed_json.get('proposer_role') in ['Role A', 'Role B']:
 
                 scenario_text = parsed_json['scenario_text']
-                if "objective" not in scenario_text.lower() or \
+                # Ensure scenario_text is not empty and contains key elements
+                if not scenario_text.strip() or \
+                   "objective" not in scenario_text.lower() or \
                    ("win criteria" not in scenario_text.lower() and "tie criteria" not in scenario_text.lower()):
-                     logging.warning(f"Generated scenario text lacks required elements for agent {proposer_agent.agent_id}. Text: {scenario_text}")
+                     logging.warning(f"Generated scenario text is empty or lacks required elements for agent {proposer_agent.agent_id}. Text: '{scenario_text}'")
                      return None
 
                 role_assignment = {proposer_agent.agent_id: parsed_json['proposer_role']}
@@ -171,10 +189,10 @@ def generate_scenario(proposer_agent, config: dict):
                 logging.info(f"Scenario generated successfully by agent {proposer_agent.agent_id}")
                 return {'scenario_text': scenario_text, 'role_assignment': role_assignment}
             else:
-                logging.warning(f"Generated scenario JSON structure invalid for agent {proposer_agent.agent_id}. Content: {raw_content}")
+                logging.warning(f"Generated scenario JSON structure invalid for agent {proposer_agent.agent_id}. Cleaned Content: {cleaned_content}")
                 return None
         except json.JSONDecodeError:
-            logging.warning(f"Failed to parse scenario output as JSON for agent {proposer_agent.agent_id}. Content: {raw_content}")
+            logging.warning(f"Failed to parse scenario output as JSON for agent {proposer_agent.agent_id}. Cleaned Content: {cleaned_content}. Original Raw Content: {raw_content}")
             return None
 
     except TimeoutError:
@@ -239,7 +257,8 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         response_text = response.choices[0].message.get('content', '').strip()
         if not response_text:
              logging.warning(f"Agent {agent.agent_id} generated an empty response.")
-             return None
+             # Return None for empty response, or handle as error if needed by downstream logic
+             return None # Or perhaps return an empty string if that's preferred
 
         logging.debug(f"Response generated successfully by agent {agent.agent_id}")
         return response_text
@@ -254,7 +273,7 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
 def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict):
     if not isinstance(scenario_data, dict) or not isinstance(transcript, list) or not isinstance(config, dict):
         logging.error("adjudicate_interaction: Invalid arguments provided.")
-        return "error"
+        return "error" # Consistent error return type
 
     client = get_goodfire_client(config)
     adjudicator_config = config.get('adjudicator', {})
@@ -290,18 +309,27 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict):
              logging.error(f"Invalid response structure received from adjudicator API.")
              return "error"
 
-        result_text = response.choices[0].message.get('content', '').strip().replace('.', '')
+        result_text = response.choices[0].message.get('content', '').strip().replace('.', '') # Remove trailing periods
 
         valid_outcomes = ['Role A Wins', 'Role B Wins', 'Tie']
         if result_text in valid_outcomes:
             logging.info(f"Adjudication successful: {result_text}")
             return result_text
         else:
+            # Attempt a more robust cleanup if the exact phrase isn't matched
             logging.warning(f"Adjudicator returned non-standard text: '{result_text}'. Attempting cleanup.")
-            if "Role A Wins" in result_text: return 'Role A Wins'
-            if "Role B Wins" in result_text: return 'Role B Wins'
-            if "Tie" in result_text: return 'Tie'
-            logging.error(f"Adjudicator response cleanup failed. Returning error.")
+            result_text_lower = result_text.lower()
+            if "role a wins" in result_text_lower:
+                logging.info("Adjudication cleanup: Matched 'Role A Wins'")
+                return 'Role A Wins'
+            if "role b wins" in result_text_lower:
+                logging.info("Adjudication cleanup: Matched 'Role B Wins'")
+                return 'Role B Wins'
+            if "tie" in result_text_lower:
+                logging.info("Adjudication cleanup: Matched 'Tie'")
+                return 'Tie'
+            
+            logging.error(f"Adjudicator response cleanup failed for text: '{result_text}'. Returning error.")
             return "error"
 
     except TimeoutError:
@@ -312,7 +340,7 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict):
         return "error"
 
 def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant_or_model_id, top_k: int, config: dict):
-    from manager import Agent
+    from manager import Agent # Keep import local if only used here, or move to top if Agent is used elsewhere as type hint
     if not isinstance(dataset_1, list) or not isinstance(dataset_2, list) or \
        not isinstance(top_k, int) or not isinstance(config, dict):
         logging.error("perform_contrastive_analysis: Invalid arguments provided.")
@@ -334,7 +362,7 @@ def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant
                 model_arg = variant
             except Exception as e:
                 logging.error(f"Error setting variant edits for contrast analysis on agent {agent_variant_or_model_id.agent_id}: {e}. Using base model ID.")
-                model_arg = agent_variant_or_model_id.model_id
+                model_arg = agent_variant_or_model_id.model_id # Fallback to base model ID
         else:
              model_arg = agent_variant_or_model_id.model_id
     elif isinstance(agent_variant_or_model_id, str):
@@ -355,22 +383,23 @@ def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant
 
         if isinstance(result, tuple) and len(result) == 2:
             features_d1, features_d2 = result
+            # Ensure the returned features are actually lists (or iterables convertible to lists)
             is_list_like = lambda x: hasattr(x, '__iter__') and not isinstance(x, (str, bytes))
             if is_list_like(features_d1) and is_list_like(features_d2):
                  features_d1_list = list(features_d1)
                  features_d2_list = list(features_d2)
-                 logging.info(f"Contrastive analysis completed. Got {len(features_d1_list)} vs {len(features_d2_list)} features.")
+                 logging.info(f"Contrastive analysis completed. Got {len(features_d1_list)} features for dataset_1 (to avoid) and {len(features_d2_list)} features for dataset_2 (to encourage).")
                  return features_d1_list, features_d2_list
             else:
                  logging.error(f"Contrastive analysis returned tuple, but contents are not list-like: Type1={type(features_d1)}, Type2={type(features_d2)}")
                  return None, None
         else:
-            logging.error(f"Contrastive analysis returned unexpected result type: {type(result)}")
+            logging.error(f"Contrastive analysis returned unexpected result type: {type(result)}. Expected tuple of two lists.")
             return None, None
 
-    except AttributeError:
-        logging.critical("Goodfire client object is missing the 'features.contrast' method.", exc_info=True)
-        raise
+    except AttributeError as ae: # Specifically catch if 'features.contrast' is missing
+        logging.critical(f"Goodfire client object is missing the 'features.contrast' method. Ensure Goodfire library is up-to-date and supports this. Error: {ae}", exc_info=True)
+        raise # Re-raise as this is a critical library issue
     except TimeoutError:
         logging.error(f"Timeout during contrastive analysis after retries.")
         return None, None
