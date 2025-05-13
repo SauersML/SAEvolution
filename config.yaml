@@ -86,7 +86,7 @@ adjudicator:
   temperature: 0.0
 
 logging:
-  log_level: INFO
+  log_level: DEBUG
   log_directory: logs
 
 state_saving:
