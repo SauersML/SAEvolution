@@ -31,15 +31,30 @@ game:
 generation:
   scenario:
     prompt: |
-      Generate a concise two-player game scenario. Output ONLY valid JSON with the following keys:
-      1. 'scenario_text': A string describing the game. This string MUST be structured to include and clearly identify the following components, preferably using these exact headings or very similar ones (e.g., "Player Objectives" instead of "Objective(s)"):
-         - 'Context:' (describing the game setting and relevant background)
-         - 'Roles:' (defining the two player roles, e.g., 'Role A: [description]', 'Role B: [description]')
-         - 'Objective(s):' (detailing what each player or role aims to achieve; this section's text must include the word 'objective')
-         - 'Win Criteria:' (explaining the conditions under which a player/role wins; this section's text must include the phrase 'win criteria')
-         - 'Tie Criteria:' (explaining the conditions for a tie, or explicitly stating if ties are not possible; this section's text must include the phrase 'tie criteria')
-      2. 'proposer_role': A string, either 'Role A' or 'Role B', indicating which role is designated as the proposer/first mover for this game setup."
-    max_tokens: 500
+      Generate a two-player game scenario using the following XML-style tags. Your entire output must consist ONLY of these tags and their content, in sequence. Do not include any other text, explanations, or formatting outside of the tags themselves.
+
+      The required tags and their expected content are:
+
+      1.  `<context>...</context>`
+          *   Content: Describe the game setting and relevant background information.
+
+      2.  `<roles>...</roles>`
+          *   Content: Define the two player roles. For clarity within the content, you may structure this as "Role A: [description for Role A]" and "Role B: [description for Role B]".
+
+      3.  `<objectives>...</objectives>`
+          *   Content: Detail what each player or role aims to achieve. The text content *within this tag* MUST include the word 'objective'.
+
+      4.  `<win_criteria>...</win_criteria>`
+          *   Content: Explain the conditions under which a player or role wins the game. The text content *within this tag* MUST include the phrase 'win criteria'.
+
+      5.  `<tie_criteria>...</tie_criteria>`
+          *   Content: Explain the conditions under which the game results in a tie. If ties are not possible, explicitly state that. The text content *within this tag* MUST include the phrase 'tie criteria'.
+
+      6.  `<proposer_role>...</proposer_role>`
+          *   Content: Indicate which role is designated as the proposer or first mover for this game setup. The content of this tag MUST be exactly 'Role A' or 'Role B'.
+
+      Make sure your output is only the sequence of these tags with their content.
+    max_tokens: 1000
     temperature: 0.7
   response:
     prompt_template: |
