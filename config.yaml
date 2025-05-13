@@ -3,9 +3,9 @@ simulation:
   population_size: 6
 
 agent:
-  model_id: 'meta-llama/Llama-3.3-70B-Instruct' 
+  model_id: 'meta-llama/Llama-3.3-70B-Instruct'
   initial_wealth: 30.0
-  initial_genome: {} 
+  initial_genome: {}
 
 evolution:
   learning_rate: 0.05
@@ -24,17 +24,22 @@ game:
     strategy: 'fixed'
     fixed_amount: 5.0
     min_bet: 1.0
-    max_bet_ratio: 0.5 
-    max_loss_multiplier: 1.0 
-    max_gain_ratio: 2.0 
+    max_bet_ratio: 0.5
+    max_loss_multiplier: 1.0
+    max_gain_ratio: 2.0
 
 generation:
   scenario:
     prompt: |
-      Generate a concise two-player game scenario. Output ONLY valid JSON with keys: 
-      'scenario_text' (string: context, roles, objectives, win/tie criteria), 
-      'proposer_role' (string: 'Role A' or 'Role B').
-    max_tokens: 300
+      Generate a concise two-player game scenario. Output ONLY valid JSON with the following keys:
+      1. 'scenario_text': A string describing the game. This string MUST be structured to include and clearly identify the following components, preferably using these exact headings or very similar ones (e.g., "Player Objectives" instead of "Objective(s)"):
+         - 'Context:' (describing the game setting and relevant background)
+         - 'Roles:' (defining the two player roles, e.g., 'Role A: [description]', 'Role B: [description]')
+         - 'Objective(s):' (detailing what each player or role aims to achieve; this section's text must include the word 'objective')
+         - 'Win Criteria:' (explaining the conditions under which a player/role wins; this section's text must include the phrase 'win criteria')
+         - 'Tie Criteria:' (explaining the conditions for a tie, or explicitly stating if ties are not possible; this section's text must include the phrase 'tie criteria')
+      2. 'proposer_role': A string, either 'Role A' or 'Role B', indicating which role is designated as the proposer/first mover for this game setup."
+    max_tokens: 500
     temperature: 0.7
   response:
     prompt_template: |
@@ -66,18 +71,18 @@ adjudicator:
   temperature: 0.0
 
 logging:
-  log_level: INFO 
+  log_level: INFO
   log_directory: logs
 
 state_saving:
   enabled: True
-  interval: 5 
+  interval: 5
   directory: simulation_state
 
 api_retries:
   max_retries: 3
   initial_delay: 1.0
   backoff_factor: 2.0
-  
+
 goodfire:
   api_key_env_var: 'GOODFIRE_API_KEY'
