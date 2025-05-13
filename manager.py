@@ -13,7 +13,7 @@ import logging
 import uuid
 import math
 import copy
-from interface import perform_contrastive_analysis # Assuming this is correctly implemented in interface.py
+from interface import perform_contrastive_analysis
 
 class Agent:
     """
