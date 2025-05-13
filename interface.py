@@ -16,6 +16,7 @@ import random
 import hashlib
 import json
 import copy
+import re # Added for XML-style tag parsing
 
 _client_instance = None
 _last_client_config_hash = None
@@ -116,11 +117,10 @@ def generate_scenario(proposer_agent, config: dict):
     client = get_goodfire_client(config)
     gen_config = config.get('generation', {}).get('scenario', {})
     model_id = proposer_agent.model_id
-    prompt_text = gen_config.get('prompt',
-        "Generate a concise two-player game scenario. Output ONLY valid JSON with keys: "
-        "'scenario_text' (string: context, roles, objectives, win/tie criteria), "
-        "'proposer_role' (string: 'Role A' or 'Role B').")
-    max_tokens = gen_config.get('max_tokens', 300)
+    # The prompt_text will be loaded from config.yaml, which has the XML instructions.
+    # The default string here is a fallback and ideally shouldn't be used if config is correct.
+    prompt_text = gen_config.get('prompt', "Error: Scenario generation prompt not found in config.")
+    max_tokens = gen_config.get('max_tokens', 500) # Updated to match example config's XML max_tokens
     temperature = gen_config.get('temperature', 0.7)
     retry_config = config.get('api_retries', {})
 
@@ -154,46 +154,47 @@ def generate_scenario(proposer_agent, config: dict):
              logging.warning(f"Empty content received from API for agent {proposer_agent.agent_id}.")
              return None
 
-        # Strip markdown code fences if present
-        cleaned_content = raw_content
-        if cleaned_content.startswith("```json"):
-            # Remove ```json prefix
-            cleaned_content = cleaned_content[len("```json"):].strip()
-            # Remove ``` suffix
-            if cleaned_content.endswith("```"):
-                cleaned_content = cleaned_content[:-len("```")].strip()
-        elif cleaned_content.startswith("```"): # Fallback for just ``` prefix and ``` suffix
-            # Remove ``` prefix
-            cleaned_content = cleaned_content[len("```"):].strip()
-            # Remove ``` suffix
-            if cleaned_content.endswith("```"):
-                cleaned_content = cleaned_content[:-len("```")].strip()
-
-        try:
-            # Use cleaned_content for parsing
-            parsed_json = json.loads(cleaned_content)
-            if isinstance(parsed_json, dict) and \
-               isinstance(parsed_json.get('scenario_text'), str) and \
-               parsed_json.get('proposer_role') in ['Role A', 'Role B']:
-
-                scenario_text = parsed_json['scenario_text']
-                # Ensure scenario_text is not empty and contains key elements
-                if not scenario_text.strip() or \
-                   "objective" not in scenario_text.lower() or \
-                   ("win criteria" not in scenario_text.lower() and "tie criteria" not in scenario_text.lower()):
-                     logging.warning(f"Generated scenario text is empty or lacks required elements for agent {proposer_agent.agent_id}. Text: '{scenario_text}'")
-                     return None
-
-                role_assignment = {proposer_agent.agent_id: parsed_json['proposer_role']}
-
-                logging.info(f"Scenario generated successfully by agent {proposer_agent.agent_id}")
-                return {'scenario_text': scenario_text, 'role_assignment': role_assignment}
+        # --- XML-style Tag Parsing Logic ---
+        tags_content = {}
+        tag_names = ["context", "roles", "objectives", "win_criteria", "tie_criteria", "proposer_role"]
+        
+        for tag_name in tag_names:
+            match = re.search(rf"<{tag_name}>(.*?)</{tag_name}>", raw_content, re.DOTALL | re.IGNORECASE)
+            if match:
+                tags_content[tag_name] = match.group(1).strip()
             else:
-                logging.warning(f"Generated scenario JSON structure invalid for agent {proposer_agent.agent_id}. Cleaned Content: {cleaned_content}")
+                logging.warning(f"Tag <{tag_name}> not found in LLM output for agent {proposer_agent.agent_id}. Raw content: {raw_content[:500]}...")
                 return None
-        except json.JSONDecodeError:
-            logging.warning(f"Failed to parse scenario output as JSON for agent {proposer_agent.agent_id}. Cleaned Content: {cleaned_content}. Original Raw Content: {raw_content}")
+        
+        # Validate content
+        if "objective" not in tags_content["objectives"].lower():
+            logging.warning(f"Keyword 'objective' not found in <objectives> content for agent {proposer_agent.agent_id}. Content: {tags_content['objectives']}")
             return None
+        if "win criteria" not in tags_content["win_criteria"].lower():
+            logging.warning(f"Keyword 'win criteria' not found in <win_criteria> content for agent {proposer_agent.agent_id}. Content: {tags_content['win_criteria']}")
+            return None
+        if "tie criteria" not in tags_content["tie_criteria"].lower():
+            logging.warning(f"Keyword 'tie criteria' not found in <tie_criteria> content for agent {proposer_agent.agent_id}. Content: {tags_content['tie_criteria']}")
+            return None
+        
+        proposer_role_text = tags_content["proposer_role"]
+        if proposer_role_text not in ["Role A", "Role B"]:
+            logging.warning(f"Invalid content for <proposer_role>: '{proposer_role_text}'. Expected 'Role A' or 'Role B'. Agent: {proposer_agent.agent_id}")
+            return None
+
+        # Assemble scenario_text for downstream use (e.g., in prompts)
+        assembled_scenario_text = (
+            f"Context:\n{tags_content['context']}\n\n"
+            f"Roles:\n{tags_content['roles']}\n\n"
+            f"Objective(s):\n{tags_content['objectives']}\n\n" # Keep 'Objective(s):' for consistency if other prompts expect it
+            f"Win Criteria:\n{tags_content['win_criteria']}\n\n"
+            f"Tie Criteria:\n{tags_content['tie_criteria']}"
+        )
+
+        role_assignment = {proposer_agent.agent_id: proposer_role_text}
+
+        logging.info(f"Scenario generated and parsed successfully using XML-style tags for agent {proposer_agent.agent_id}")
+        return {'scenario_text': assembled_scenario_text, 'role_assignment': role_assignment}
 
     except TimeoutError:
          logging.error(f"Timeout generating scenario for agent {proposer_agent.agent_id} after retries.")
@@ -383,7 +384,7 @@ def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant
 
         if isinstance(result, tuple) and len(result) == 2:
             features_d1, features_d2 = result
-            # Ensure the returned features are actually lists (or iterables convertible to lists)
+            # the returned features are actually lists (or iterables convertible to lists)
             is_list_like = lambda x: hasattr(x, '__iter__') and not isinstance(x, (str, bytes))
             if is_list_like(features_d1) and is_list_like(features_d2):
                  features_d1_list = list(features_d1)
@@ -398,7 +399,7 @@ def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant
             return None, None
 
     except AttributeError as ae: # Specifically catch if 'features.contrast' is missing
-        logging.critical(f"Goodfire client object is missing the 'features.contrast' method. Ensure Goodfire library is up-to-date and supports this. Error: {ae}", exc_info=True)
+        logging.critical(f"Goodfire client object is missing the 'features.contrast' method. Error: {ae}", exc_info=True)
         raise # Re-raise as this is a critical library issue
     except TimeoutError:
         logging.error(f"Timeout during contrastive analysis after retries.")
