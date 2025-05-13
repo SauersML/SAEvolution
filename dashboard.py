@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import altair as alt
 import re
-from collections import Counter
+import numpy as np
 
 # --- Configuration ---
 DEFAULT_STATE_BASE_DIR = "simulation_state"
@@ -17,9 +17,8 @@ def natural_sort_key(s, _nsre=re.compile('([0-9]+)')):
     """Key for natural sorting (e.g., gen_2 before gen_10)."""
     return [int(text) if text.isdigit() else text.lower() for text in _nsre.split(s)]
 
-@st.cache_data(ttl=30) # Shorter TTL for more frequent updates if sim is running
+@st.cache_data(ttl=30)
 def get_available_simulation_runs(state_base_dir: str) -> list[str]:
-    """Scans the state directory for available simulation run IDs."""
     base_path = Path(state_base_dir)
     if not base_path.is_dir():
         st.sidebar.error(f"State directory not found: {state_base_dir}")
@@ -50,14 +49,18 @@ def get_latest_generation_number(run_id: str, state_base_dir: str) -> int | None
     if tracker_path.exists():
         try:
             with open(tracker_path, 'r') as f:
-                return int(f.read().strip())
+                content = f.read().strip()
+                if content:
+                    return int(content)
+        except ValueError:
+             st.error(f"Invalid content in latest generation tracker for {run_id}. Expected an integer.")
         except Exception as e:
             st.error(f"Error reading latest generation tracker for {run_id}: {e}")
     return None
 
 @st.cache_data(ttl=30)
 def load_generation_data(run_id: str, generation_number: int, state_base_dir: str) -> dict | None:
-    if not run_id: return None
+    if not run_id or generation_number is None: return None
     gen_file_path = Path(state_base_dir) / run_id / f"generation_{generation_number:04d}.json"
     if gen_file_path.exists():
         try:
@@ -83,67 +86,72 @@ def load_all_generation_summary_data(run_id: str, state_base_dir: str) -> pd.Dat
             summary["generation_number"] = gen_data.get("generation_number", gen_num)
             summary["timestamp_completed"] = gen_data.get("timestamp_completed")
             
-            # Calculate approximate genome diversity
             population_state = gen_data.get("population_state", [])
             if population_state:
                 genome_strings = [json.dumps(agent.get("genome", {}), sort_keys=True) for agent in population_state]
                 summary["unique_genomes_approx"] = len(set(genome_strings))
             else:
-                summary["unique_genomes_approx"] = 0
+                summary["unique_genomes_approx"] = 0 # Or pd.NA if preferred for consistency in DataFrame
             all_summaries.append(summary)
     
-    return pd.DataFrame(all_summaries)
+    df = pd.DataFrame(all_summaries)
+    # numeric columns are numeric, handling potential all-None cases from JSON
+    for col in ["avg_fitness", "min_fitness", "max_fitness", "avg_wealth", "unique_genomes_approx", "total_games_played_in_generation"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+    return df
 
 @st.cache_data(ttl=30)
 def load_games_for_generation(run_id: str, generation_number: int, state_base_dir: str) -> list[dict]:
-    if not run_id: return []
+    if not run_id or generation_number is None: return []
     games_file_path = Path(state_base_dir) / run_id / f"games_generation_{generation_number:04d}.jsonl"
     games_data = []
     if games_file_path.exists():
         try:
             with open(games_file_path, 'r') as f:
                 for line in f:
-                    games_data.append(json.loads(line))
+                    try:
+                        games_data.append(json.loads(line))
+                    except json.JSONDecodeError as jde:
+                        st.warning(f"Skipping invalid JSON line in {games_file_path}: {jde}")
         except Exception as e:
             st.error(f"Error loading games for generation {generation_number} of run {run_id}: {e}")
     return games_data
 
 def get_agent_display_name(agent_id: str) -> str:
-    return f"Agent {agent_id[:8]}..." if agent_id else "N/A"
+    return f"Agent {agent_id[:8]}..." if isinstance(agent_id, str) and agent_id else "N/A"
 
 # --- Streamlit App Layout ---
 st.set_page_config(layout="wide", page_title="SAEvolution Dashboard")
-st.title("🚀 Socio-Cultural Agent Evolution Dashboard")
+st.title("Agent Evolution Dashboard")
 
-# Initialize session state for active tab and game viewer pre-selection
+# Initialize session state
 if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = "📈 Overview & Curves"
+    st.session_state.active_tab = "📈 Overview & Curves" # Default tab
 if 'selected_game_id_from_agent_detail' not in st.session_state:
     st.session_state.selected_game_id_from_agent_detail = None
 if 'selected_gen_for_game_viewer' not in st.session_state:
     st.session_state.selected_gen_for_game_viewer = None
 
-
 # --- Sidebar ---
 st.sidebar.header("Simulation Controls")
-state_dir = st.sidebar.text_input("State Directory Path", value=DEFAULT_STATE_BASE_DIR)
+state_dir = st.sidebar.text_input("State Directory Path", value=DEFAULT_STATE_BASE_DIR, help="Path to the base directory where simulation states are saved.")
 available_runs = get_available_simulation_runs(state_dir)
 
 if not available_runs:
-    st.sidebar.warning("No simulation runs found. simulations have run and saved state.")
+    st.sidebar.warning("No simulation runs found. simulations have run and saved state?")
     st.info("No simulation data to display. Please check the 'State Directory Path' and run a simulation.")
     st.stop()
 
 selected_run_id = st.sidebar.selectbox(
     "Select Simulation Run ID",
     options=available_runs,
-    index=0,
+    index=0 if available_runs else -1, # Handle empty case, though st.stop above should prevent
     help="Choose a simulation run to inspect."
 )
 
-if st.sidebar.button("🔄 Refresh Data", help="Reload all data from the selected run."):
-    st.cache_data.clear() # Clear all cached data
-    # Reset potentially stale selections from a previous run/state
+if st.sidebar.button("🔄 Refresh Data", help="Reload all data from the selected run and clear cache."):
+    st.cache_data.clear()
     st.session_state.selected_game_id_from_agent_detail = None
     st.session_state.selected_gen_for_game_viewer = None
     st.rerun()
@@ -158,24 +166,26 @@ latest_gen_num_for_run = get_latest_generation_number(selected_run_id, state_dir
 all_gen_summary_df = load_all_generation_summary_data(selected_run_id, state_dir)
 
 if latest_gen_num_for_run is None and selected_run_id:
-    st.warning(f"No generation data found for run '{selected_run_id}'. The simulation might be in progress or encountered an issue.")
-    # Allow dashboard to load, but tabs will show 'no data' messages.
-
+    st.warning(f"No generation data found for run '{selected_run_id}'. The simulation might be in progress, errored, or has not completed a generation yet.")
 
 # --- Tab Navigation ---
 tabs_list = ["📈 Overview & Curves", "🔬 Generation Explorer", "👤 Agent Detail", "📜 Game Viewer"]
-# Allow active_tab to be set by buttons, otherwise default or keep current
-if 'active_tab_choice' not in st.session_state: # To handle direct selection via tabs UI
-    st.session_state.active_tab_choice = st.session_state.active_tab
+# Default to the session state active tab if it's valid, otherwise first tab
+try:
+    default_tab_idx = tabs_list.index(st.session_state.active_tab)
+except ValueError:
+    default_tab_idx = 0
+    st.session_state.active_tab = tabs_list[0]
 
-# This creates the actual tab UI. The `active_tab` session state should ideally control this.
-# However, st.tabs itself doesn't directly take an active_tab parameter.
-# We use session_state to manage the content visibility or default selections within tabs.
 
-active_tab_ui = st.tabs(tabs_list)
+# st.tabs does not directly support setting the active tab via a parameter after creation.
+# The typical way is to manage content visibility or use st.radio for custom tab-like behavior.
+# For st.tabs, we manage default selections *within* the tabs based on session_state.
+active_tab_ui_selection = st.tabs(tabs_list)
+
 
 # --- Tab 1: Overview & Curves ---
-with active_tab_ui[0]: # Corresponds to "📈 Overview & Curves"
+with active_tab_ui_selection[0]: # Corresponds to tabs_list[0]
     st.header(f"Run Overview: {selected_run_id}")
     
     col_overview1, col_overview2 = st.columns(2)
@@ -190,65 +200,80 @@ with active_tab_ui[0]: # Corresponds to "📈 Overview & Curves"
 
     if not all_gen_summary_df.empty:
         st.subheader("Performance Curves Over Generations")
+        plot_columns = st.columns(2)
         
-        col1, col2 = st.columns(2)
-        with col1:
+        with plot_columns[0]:
             st.markdown("##### Fitness Metrics")
             fitness_metrics_to_plot = ["avg_fitness", "min_fitness", "max_fitness"]
-            available_fitness_metrics = [m for m in fitness_metrics_to_plot if m in all_gen_summary_df.columns]
+            available_fitness_metrics = [m for m in fitness_metrics_to_plot if m in all_gen_summary_df.columns and all_gen_summary_df[m].notna().any()]
             if available_fitness_metrics:
-                fitness_df = all_gen_summary_df[["generation_number"] + available_fitness_metrics].melt(
+                fitness_df_melted = all_gen_summary_df[["generation_number"] + available_fitness_metrics].melt(
                     id_vars=["generation_number"], var_name="Metric", value_name="Fitness"
-                )
-                fitness_chart = alt.Chart(fitness_df).mark_line(point=True).encode(
-                    x=alt.X('generation_number:Q', title='Generation'),
-                    y=alt.Y('Fitness:Q', title='Fitness Value', scale=alt.Scale(zero=False)),
-                    color='Metric:N',
-                    tooltip=['generation_number', 'Metric', alt.Tooltip('Fitness:Q', format='.3f')]
-                ).interactive()
-                st.altair_chart(fitness_chart, use_container_width=True)
-            else:
-                st.caption("Fitness data (avg, min, max) not available in summaries.")
-
-        with col2:
-            st.markdown("##### Wealth Metrics")
-            if "avg_wealth" in all_gen_summary_df.columns:
-                wealth_df = all_gen_summary_df[["generation_number", "avg_wealth"]].copy()
-                wealth_df.rename(columns={"avg_wealth": "Average Wealth"}, inplace=True)
+                ).dropna(subset=['Fitness']) # Drop rows where Fitness is NaN for plotting
                 
-                wealth_chart = alt.Chart(wealth_df).mark_line(point=True).encode(
-                    x=alt.X('generation_number:Q', title='Generation'),
-                    y=alt.Y('Average Wealth:Q', title='Wealth Value', scale=alt.Scale(zero=False)),
-                    tooltip=['generation_number', alt.Tooltip('Average Wealth:Q', format='.2f')]
-                ).interactive()
-                st.altair_chart(wealth_chart, use_container_width=True)
+                if not fitness_df_melted.empty:
+                    fitness_chart = alt.Chart(fitness_df_melted).mark_line(point=True).encode(
+                        x=alt.X('generation_number:Q', title='Generation'),
+                        y=alt.Y('Fitness:Q', title='Fitness Value', scale=alt.Scale(zero=False)),
+                        color='Metric:N',
+                        tooltip=['generation_number', 'Metric', alt.Tooltip('Fitness:Q', format='.3f')]
+                    ).interactive()
+                    st.altair_chart(fitness_chart, use_container_width=True)
+                else:
+                    st.caption("No valid fitness data to plot.")
             else:
-                st.caption("Average wealth data not available in summaries.")
+                st.caption("Fitness data (avg, min, max) not available or all NaN in summaries.")
+
+        with plot_columns[1]:
+            st.markdown("##### Wealth Metrics")
+            if "avg_wealth" in all_gen_summary_df.columns and all_gen_summary_df["avg_wealth"].notna().any():
+                wealth_df_plot = all_gen_summary_df[["generation_number", "avg_wealth"]].copy().dropna(subset=['avg_wealth'])
+                wealth_df_plot.rename(columns={"avg_wealth": "Average Wealth"}, inplace=True)
+                
+                if not wealth_df_plot.empty:
+                    wealth_chart = alt.Chart(wealth_df_plot).mark_line(point=True).encode(
+                        x=alt.X('generation_number:Q', title='Generation'),
+                        y=alt.Y('Average Wealth:Q', title='Wealth Value', scale=alt.Scale(zero=False)),
+                        tooltip=['generation_number', alt.Tooltip('Average Wealth:Q', format='.2f')]
+                    ).interactive()
+                    st.altair_chart(wealth_chart, use_container_width=True)
+                else:
+                    st.caption("No valid average wealth data to plot.")
+            else:
+                st.caption("Average wealth data not available or all NaN in summaries.")
         
-        col3, col4 = st.columns(2)
-        with col3:
+        plot_columns_2 = st.columns(2)
+        with plot_columns_2[0]:
             st.markdown("##### Game Statistics")
-            if "total_games_played_in_generation" in all_gen_summary_df.columns:
-                games_chart = alt.Chart(all_gen_summary_df).mark_bar().encode(
-                    x=alt.X('generation_number:Q', title='Generation', bin=alt.Bin(maxbins=max(1, latest_gen_num_for_run or 1))),
-                    y=alt.Y('total_games_played_in_generation:Q', title='Games Played'),
-                    tooltip=['generation_number', 'total_games_played_in_generation']
-                ).interactive()
-                st.altair_chart(games_chart, use_container_width=True)
+            if "total_games_played_in_generation" in all_gen_summary_df.columns and all_gen_summary_df["total_games_played_in_generation"].notna().any():
+                games_df_plot = all_gen_summary_df.dropna(subset=['total_games_played_in_generation'])
+                if not games_df_plot.empty:
+                    games_chart = alt.Chart(games_df_plot).mark_bar().encode(
+                        x=alt.X('generation_number:Q', title='Generation', bin=alt.Bin(maxbins=max(1, latest_gen_num_for_run or 1))),
+                        y=alt.Y('total_games_played_in_generation:Q', title='Games Played'),
+                        tooltip=['generation_number', 'total_games_played_in_generation']
+                    ).interactive()
+                    st.altair_chart(games_chart, use_container_width=True)
+                else:
+                    st.caption("No valid game statistics data to plot.")
             else:
-                st.caption("Total games played data not available.")
+                st.caption("Total games played data not available or all NaN.")
         
-        with col4:
+        with plot_columns_2[1]:
             st.markdown("##### Genome Diversity (Approx.)")
-            if "unique_genomes_approx" in all_gen_summary_df.columns:
-                diversity_chart = alt.Chart(all_gen_summary_df).mark_line(point=alt.OverlayMarkDef(filled=False, fill="white")).encode(
-                    x=alt.X('generation_number:Q', title='Generation'),
-                    y=alt.Y('unique_genomes_approx:Q', title='Unique Genomes (Approx.)'),
-                    tooltip=['generation_number', 'unique_genomes_approx']
-                ).interactive()
-                st.altair_chart(diversity_chart, use_container_width=True)
+            if "unique_genomes_approx" in all_gen_summary_df.columns and all_gen_summary_df["unique_genomes_approx"].notna().any():
+                diversity_df_plot = all_gen_summary_df.dropna(subset=['unique_genomes_approx'])
+                if not diversity_df_plot.empty:
+                    diversity_chart = alt.Chart(diversity_df_plot).mark_line(point=alt.OverlayMarkDef(filled=False, fill="white")).encode(
+                        x=alt.X('generation_number:Q', title='Generation'),
+                        y=alt.Y('unique_genomes_approx:Q', title='Unique Genomes (Approx.)'),
+                        tooltip=['generation_number', 'unique_genomes_approx']
+                    ).interactive()
+                    st.altair_chart(diversity_chart, use_container_width=True)
+                else:
+                    st.caption("No valid genome diversity data to plot.")
             else:
-                st.caption("Approximate unique genomes data not available.")
+                st.caption("Approximate unique genomes data not available or all NaN.")
 
         st.subheader("Latest Generation Snapshot")
         if latest_gen_num_for_run is not None:
@@ -256,17 +281,23 @@ with active_tab_ui[0]: # Corresponds to "📈 Overview & Curves"
             if latest_gen_data and "population_state" in latest_gen_data:
                 pop_state = latest_gen_data["population_state"]
                 latest_gen_summary = latest_gen_data.get("generation_summary_metrics", {})
-
-                df_latest_pop = pd.DataFrame([{
-                    "wealth": agent.get("wealth"),
-                    "fitness": agent.get("fitness_score", latest_gen_summary.get("fitness_scores_map", {}).get(agent.get("agent_id")))
-                } for agent in pop_state])
                 
-                col_dist1, col_dist2 = st.columns(2)
-                with col_dist1:
+                agent_metrics_latest_gen = []
+                fitness_map_latest = latest_gen_summary.get("fitness_scores_map", {})
+                for agent in pop_state:
+                    agent_id = agent.get("agent_id")
+                    fitness = agent.get("fitness_score", fitness_map_latest.get(agent_id))
+                    agent_metrics_latest_gen.append({
+                        "wealth": agent.get("wealth"),
+                        "fitness": fitness
+                    })
+                df_latest_pop = pd.DataFrame(agent_metrics_latest_gen)
+                
+                dist_cols = st.columns(2)
+                with dist_cols[0]:
                     st.markdown("##### Wealth Distribution (Latest Gen)")
                     if not df_latest_pop.empty and "wealth" in df_latest_pop.columns and df_latest_pop["wealth"].notna().any():
-                        wealth_hist = alt.Chart(df_latest_pop).mark_bar().encode(
+                        wealth_hist = alt.Chart(df_latest_pop.dropna(subset=['wealth'])).mark_bar().encode(
                             alt.X("wealth:Q", bin=alt.Bin(maxbins=20), title="Wealth"),
                             alt.Y("count()", title="Number of Agents"),
                             tooltip=[alt.Tooltip("wealth:Q", title="Wealth Bin"), alt.Tooltip("count():Q", title="Agents")]
@@ -275,10 +306,10 @@ with active_tab_ui[0]: # Corresponds to "📈 Overview & Curves"
                     else:
                         st.caption("Wealth data for distribution unavailable for the latest generation.")
                 
-                with col_dist2:
+                with dist_cols[1]:
                     st.markdown("##### Fitness Distribution (Latest Gen)")
                     if not df_latest_pop.empty and "fitness" in df_latest_pop.columns and df_latest_pop["fitness"].notna().any():
-                        fitness_hist = alt.Chart(df_latest_pop).mark_bar().encode(
+                        fitness_hist = alt.Chart(df_latest_pop.dropna(subset=['fitness'])).mark_bar().encode(
                             alt.X("fitness:Q", bin=alt.Bin(maxbins=20), title="Fitness Score"),
                             alt.Y("count()", title="Number of Agents"),
                             tooltip=[alt.Tooltip("fitness:Q", title="Fitness Bin", format=".3f"), alt.Tooltip("count():Q", title="Agents")]
@@ -294,71 +325,80 @@ with active_tab_ui[0]: # Corresponds to "📈 Overview & Curves"
         st.info("No generation summary data found to plot curves for this run.")
 
 # --- Tab 2: Generation Explorer ---
-with active_tab_ui[1]: # Corresponds to "🔬 Generation Explorer"
+with active_tab_ui_selection[1]:
     st.header("Generation Explorer")
     if latest_gen_num_for_run is None:
         st.warning("No generation data available for this run.")
     else:
-        gen_numbers = list(range(1, latest_gen_num_for_run + 1))
-        # index is valid if gen_numbers is empty (though caught by latest_gen_num_for_run check)
-        default_idx_gen_explorer = len(gen_numbers) - 1 if gen_numbers else 0
+        gen_numbers_explorer = list(range(1, latest_gen_num_for_run + 1))
+        default_idx_gen_explorer = len(gen_numbers_explorer) - 1 if gen_numbers_explorer else 0
+        
         selected_gen_num_explorer = st.selectbox(
             "Select Generation to Explore", 
-            options=gen_numbers, 
+            options=gen_numbers_explorer, 
             format_func=lambda x: f"Generation {x}",
             index=default_idx_gen_explorer,
             key="gen_explorer_gen_select"
         )
 
         if selected_gen_num_explorer:
-            gen_data = load_generation_data(selected_run_id, selected_gen_num_explorer, state_dir)
-            if gen_data:
+            gen_data_explorer = load_generation_data(selected_run_id, selected_gen_num_explorer, state_dir)
+            if gen_data_explorer:
                 st.subheader(f"Details for Generation {selected_gen_num_explorer}")
                 
-                summary_metrics = gen_data.get("generation_summary_metrics", {})
-                cols_metrics_gen = st.columns(4)
-                cols_metrics_gen[0].metric("Avg Fitness", f"{summary_metrics.get('avg_fitness', 0):.3f}" if summary_metrics.get('avg_fitness') is not None else "N/A")
-                cols_metrics_gen[1].metric("Max Fitness", f"{summary_metrics.get('max_fitness', 0):.3f}" if summary_metrics.get('max_fitness') is not None else "N/A")
-                cols_metrics_gen[2].metric("Avg Wealth", f"{summary_metrics.get('avg_wealth', 0):.2f}" if summary_metrics.get('avg_wealth') is not None else "N/A")
-                cols_metrics_gen[3].metric("Games Played", summary_metrics.get('total_games_played_in_generation', "N/A"))
+                summary_metrics_explorer = gen_data_explorer.get("generation_summary_metrics", {})
+                cols_metrics_gen_explorer = st.columns(4)
+                cols_metrics_gen_explorer[0].metric("Avg Fitness", f"{summary_metrics_explorer.get('avg_fitness', 0):.3f}" if summary_metrics_explorer.get('avg_fitness') is not None else "N/A")
+                cols_metrics_gen_explorer[1].metric("Max Fitness", f"{summary_metrics_explorer.get('max_fitness', 0):.3f}" if summary_metrics_explorer.get('max_fitness') is not None else "N/A")
+                cols_metrics_gen_explorer[2].metric("Avg Wealth", f"{summary_metrics_explorer.get('avg_wealth', 0):.2f}" if summary_metrics_explorer.get('avg_wealth') is not None else "N/A")
+                cols_metrics_gen_explorer[3].metric("Games Played", summary_metrics_explorer.get('total_games_played_in_generation', "N/A"))
 
                 st.markdown("##### Agents in this Generation")
-                population_state = gen_data.get("population_state", [])
-                if population_state:
+                population_state_explorer = gen_data_explorer.get("population_state", [])
+                if population_state_explorer:
                     agents_df_data = []
-                    fitness_map = summary_metrics.get("fitness_scores_map", {})
-                    for agent_s in population_state:
+                    fitness_map_explorer = summary_metrics_explorer.get("fitness_scores_map", {})
+                    for agent_s in population_state_explorer:
                         agent_id = agent_s.get("agent_id")
-                        fitness = agent_s.get("fitness_score", fitness_map.get(agent_id))
+                        fitness = agent_s.get("fitness_score", fitness_map_explorer.get(agent_id)) # This can be None
                         agents_df_data.append({
                             "Agent ID": agent_id,
                             "Display ID": get_agent_display_name(agent_id),
                             "Model ID": agent_s.get("model_id"),
                             "Wealth": agent_s.get("wealth"),
-                            "Fitness": fitness,
+                            "Fitness": fitness, # Keep as float or None
                             "Genome Size": len(agent_s.get("genome", {})),
                         })
-                    agents_df = pd.DataFrame(agents_df_data)
+                    agents_df_explorer = pd.DataFrame(agents_df_data)
                     
-                    if not agents_df.empty and "Fitness" in agents_df.columns:
-                         agents_df["Rank (by Fitness)"] = agents_df["Fitness"].rank(method="dense", ascending=False).astype(int)
-                         # Select and order columns for display
-                         display_columns = ["Rank (by Fitness)", "Display ID", "Wealth", "Fitness", "Genome Size", "Model ID", "Agent ID"]
-                         # Filter out columns that might not exist if data is partial
-                         display_columns = [col for col in display_columns if col in agents_df.columns]
-                         st.dataframe(agents_df[display_columns], use_container_width=True, hide_index=True)
-                    elif not agents_df.empty:
-                        st.dataframe(agents_df, use_container_width=True, hide_index=True) # Show without rank if fitness is missing
+                    if not agents_df_explorer.empty:
+                        if "Fitness" in agents_df_explorer.columns and agents_df_explorer["Fitness"].notna().any():
+                            # Rank as float, then convert to nullable integer type
+                            agents_df_explorer["Rank (by Fitness)"] = agents_df_explorer["Fitness"].rank(method="dense", ascending=False).astype(pd.Int64Dtype())
+                        else:
+                            agents_df_explorer["Rank (by Fitness)"] = pd.NA # Assign NA if no fitness data or all are NaN
+                        
+                        display_columns = ["Rank (by Fitness)", "Display ID", "Wealth", "Fitness", "Genome Size", "Model ID", "Agent ID"]
+                        display_columns = [col for col in display_columns if col in agents_df_explorer.columns] # columns exist
+                        
+                        st.dataframe(
+                            agents_df_explorer[display_columns], 
+                            use_container_width=True, 
+                            hide_index=True,
+                            column_config={
+                                "Wealth": st.column_config.NumberColumn(format="%.2f"),
+                                "Fitness": st.column_config.NumberColumn(format="%.3f")
+                            }
+                        )
                     else:
-                        st.info("No agent details to display in table.")
-
+                        st.info("No agent details to display in table for this generation.")
                 else:
                     st.info("No agent population data found for this generation.")
             else:
                 st.error(f"Could not load data for Generation {selected_gen_num_explorer}.")
 
 # --- Tab 3: Agent Detail ---
-with active_tab_ui[2]: # Corresponds to "👤 Agent Detail"
+with active_tab_ui_selection[2]:
     st.header("Agent Detail Viewer")
     if latest_gen_num_for_run is None:
         st.warning("No generation data available to select agents from.")
@@ -375,145 +415,122 @@ with active_tab_ui[2]: # Corresponds to "👤 Agent Detail"
         )
 
         if selected_gen_for_agent_detail:
-            gen_data_for_agent = load_generation_data(selected_run_id, selected_gen_for_agent_detail, state_dir)
-            if gen_data_for_agent and "population_state" in gen_data_for_agent:
-                agent_ids_in_gen = [a.get("agent_id", f"UnknownAgent_{i}") for i, a in enumerate(gen_data_for_agent["population_state"])]
+            gen_data_for_agent_tab = load_generation_data(selected_run_id, selected_gen_for_agent_detail, state_dir)
+            if gen_data_for_agent_tab and "population_state" in gen_data_for_agent_tab:
+                population_for_agent_select = gen_data_for_agent_tab.get("population_state", [])
+                agent_id_options_detail = {
+                    agent.get("agent_id"): get_agent_display_name(agent.get("agent_id")) 
+                    for agent in population_for_agent_select if agent.get("agent_id")
+                }
                 
-                if not agent_ids_in_gen:
+                if not agent_id_options_detail:
                     st.info("No agents found in the selected generation.")
                 else:
-                    # Try to pre-select agent if navigated from Game Viewer (future feature) or keep current
-                    default_agent_idx = 0 # Simple default
-                    
                     selected_agent_id_detail = st.selectbox(
                         "Select Agent ID", 
-                        options=agent_ids_in_gen,
-                        format_func=get_agent_display_name,
-                        index=default_agent_idx,
+                        options=list(agent_id_options_detail.keys()),
+                        format_func=lambda x: agent_id_options_detail[x], # Show display name
+                        index=0, # Simple default
                         key="agent_detail_agent_select"
                     )
                     
                     if selected_agent_id_detail:
-                        agent_data = next((a for a in gen_data_for_agent["population_state"] if a.get("agent_id") == selected_agent_id_detail), None)
-                        if agent_data:
+                        agent_data_detail = next((a for a in population_for_agent_select if a.get("agent_id") == selected_agent_id_detail), None)
+                        if agent_data_detail:
                             st.subheader(f"Agent: {get_agent_display_name(selected_agent_id_detail)} (Generation {selected_gen_for_agent_detail})")
                             
-                            cols_agent_metrics = st.columns(3)
-                            cols_agent_metrics[0].metric("Wealth", f"{agent_data.get('wealth', 0):.2f}" if agent_data.get('wealth') is not None else "N/A")
+                            cols_agent_metrics_detail = st.columns(3)
+                            cols_agent_metrics_detail[0].metric("Wealth", f"{agent_data_detail.get('wealth', 0):.2f}" if agent_data_detail.get('wealth') is not None else "N/A")
                             
-                            fitness_val = agent_data.get("fitness_score")
-                            if fitness_val is None:
-                                summary_metrics = gen_data_for_agent.get("generation_summary_metrics", {})
-                                fitness_val = summary_metrics.get("fitness_scores_map", {}).get(selected_agent_id_detail)
-                            cols_agent_metrics[1].metric("Fitness", f"{fitness_val:.3f}" if fitness_val is not None else "N/A")
-                            cols_agent_metrics[2].metric("Model ID", agent_data.get("model_id", "N/A"))
+                            fitness_val_detail = agent_data_detail.get("fitness_score")
+                            if fitness_val_detail is None: # Try to get from gen summary
+                                summary_metrics_agent_tab = gen_data_for_agent_tab.get("generation_summary_metrics", {})
+                                fitness_val_detail = summary_metrics_agent_tab.get("fitness_scores_map", {}).get(selected_agent_id_detail)
+                            cols_agent_metrics_detail[1].metric("Fitness", f"{fitness_val_detail:.3f}" if fitness_val_detail is not None else "N/A")
+                            cols_agent_metrics_detail[2].metric("Model ID", agent_data_detail.get("model_id", "N/A"))
 
                             st.markdown("##### Genome Activations")
-                            genome = agent_data.get("genome", {})
-                            if genome:
-                                genome_df = pd.DataFrame(list(genome.items()), columns=['Feature UUID', 'Activation Value']).sort_values(by="Activation Value", ascending=False)
+                            genome_detail = agent_data_detail.get("genome", {})
+                            if genome_detail:
+                                genome_df_detail = pd.DataFrame(list(genome_detail.items()), columns=['Feature UUID', 'Activation Value']).sort_values(by="Activation Value", ascending=False)
                                 
                                 col_genome_table, col_genome_chart = st.columns(2)
                                 with col_genome_table:
-                                    st.dataframe(genome_df, height=250, use_container_width=True, hide_index=True)
+                                    st.dataframe(genome_df_detail.reset_index(drop=True), height=250, use_container_width=True)
                                 
                                 with col_genome_chart:
-                                    if not genome_df.empty:
-                                        # Show top N and bottom N features for better readability
+                                    if not genome_df_detail.empty:
                                         n_features_to_show = 10
-                                        top_n = genome_df.head(n_features_to_show)
-                                        bottom_n = genome_df.tail(n_features_to_show) if len(genome_df) > n_features_to_show else pd.DataFrame() # Avoid duplicates if few features
+                                        top_n = genome_df_detail.head(n_features_to_show)
+                                        bottom_n = genome_df_detail.tail(n_features_to_show) if len(genome_df_detail) > n_features_to_show else pd.DataFrame()
                                         
-                                        chart_data = pd.concat([top_n, bottom_n]).drop_duplicates()
-                                        chart_data['Feature UUID'] = chart_data['Feature UUID'].apply(lambda x: x[:15] + "..." if len(x) > 15 else x) # Shorten long UUIDs
+                                        chart_data_genome = pd.concat([top_n, bottom_n]).drop_duplicates()
+                                        chart_data_genome['Feature UUID Display'] = chart_data_genome['Feature UUID'].apply(lambda x: x[:15] + "..." if len(x) > 15 else x)
 
-                                        genome_chart = alt.Chart(chart_data).mark_bar().encode(
+                                        genome_chart_detail = alt.Chart(chart_data_genome).mark_bar().encode(
                                             x=alt.X('Activation Value:Q'),
-                                            y=alt.Y('Feature UUID:N', sort='-x', title="Feature (Shortened UUID)"),
-                                            tooltip=['Feature UUID', alt.Tooltip('Activation Value:Q', format='.3f')],
-                                            color=alt.condition(
-                                                alt.datum['Activation Value'] > 0,
-                                                alt.value('steelblue'), # Positive activations
-                                                alt.value('orange')    # Negative activations
-                                            )
-                                        ).properties(
-                                            title=f"Top/Bottom {n_features_to_show} Genome Activations"
-                                        ).interactive()
-                                        st.altair_chart(genome_chart, use_container_width=True)
+                                            y=alt.Y('Feature UUID Display:N', sort='-x', title="Feature"),
+                                            tooltip=[alt.Tooltip('Feature UUID:N', title="Full UUID"), alt.Tooltip('Activation Value:Q', format='.3f')],
+                                            color=alt.condition(alt.datum['Activation Value'] > 0, alt.value('steelblue'),alt.value('orange'))
+                                        ).properties(title=f"Top/Bottom Genome Activations").interactive()
+                                        st.altair_chart(genome_chart_detail, use_container_width=True)
                                     else:
                                         st.caption("No genome features to chart.")
                             else:
                                 st.info("No genome data for this agent.")
 
-                            st.markdown(f"##### Games Played by {get_agent_display_name(selected_agent_id_detail)} (Generation {selected_gen_for_agent_detail})")
+                            st.markdown(f"##### Games Played by {get_agent_display_name(selected_agent_id_detail)} (Gen {selected_gen_for_agent_detail})")
                             games_this_gen_for_agent = load_games_for_generation(selected_run_id, selected_gen_for_agent_detail, state_dir)
-                            agent_games = [
+                            agent_games_list = [
                                 g for g in games_this_gen_for_agent 
                                 if selected_agent_id_detail in [g.get("player_A_id"), g.get("player_B_id")]
                             ]
-                            if agent_games:
-                                games_display_data = []
-                                for idx, game in enumerate(agent_games):
-                                    is_player_A = game.get("player_A_id") == selected_agent_id_detail
-                                    opponent_id = game.get("player_B_id") if is_player_A else game.get("player_A_id")
-                                    agent_role = game.get("player_A_game_role") if is_player_A else game.get("player_B_game_role")
+                            if agent_games_list:
+                                games_display_list = []
+                                for game_item in agent_games_list:
+                                    is_player_A = game_item.get("player_A_id") == selected_agent_id_detail
+                                    opponent_id = game_item.get("player_B_id") if is_player_A else game_item.get("player_A_id")
+                                    agent_role_in_game = game_item.get("player_A_game_role") if is_player_A else game_item.get("player_B_game_role")
                                     
-                                    wealth_c = game.get("wealth_changes") or {}
-                                    agent_wealth_change = wealth_c.get("player_A_wealth_change") if is_player_A else wealth_c.get("player_B_wealth_change")
+                                    wealth_changes_game = game_item.get("wealth_changes") or {}
+                                    agent_wealth_change_val = wealth_changes_game.get("player_A_wealth_change") if is_player_A else wealth_changes_game.get("player_B_wealth_change")
                                     
-                                    # Determine win/loss/tie from agent's perspective
-                                    outcome_str = game.get("adjudication_result", "Unknown")
-                                    agent_outcome = "N/A"
-                                    if outcome_str != "Unknown" and outcome_str != "Error" and outcome_str != "Critical Game Error":
-                                        if outcome_str == "Tie" or "Tie" in outcome_str :
-                                            agent_outcome = "Tie"
-                                        elif (outcome_str == "Role A Wins" and agent_role == "Role A") or \
-                                             (outcome_str == "Role B Wins" and agent_role == "Role B"):
-                                            agent_outcome = "Win"
-                                        elif (outcome_str == "Role A Wins" and agent_role == "Role B") or \
-                                             (outcome_str == "Role B Wins" and agent_role == "Role A"):
-                                            agent_outcome = "Loss"
-                                        else:
-                                            if agent_wealth_change is not None:
-                                                if agent_wealth_change > 0: agent_outcome = "Win (Implied)"
-                                                elif agent_wealth_change < 0: agent_outcome = "Loss (Implied)"
-                                                else: agent_outcome = "Tie (Implied)"
+                                    outcome_str_game = game_item.get("adjudication_result", "Unknown")
+                                    agent_game_outcome = "N/A"
+                                    if outcome_str_game not in ["Unknown", "Error", "Critical Game Error"] and agent_role_in_game:
+                                        if "Tie" in outcome_str_game: agent_game_outcome = "Tie"
+                                        elif (outcome_str_game == "Role A Wins" and agent_role_in_game == "Role A") or \
+                                             (outcome_str_game == "Role B Wins" and agent_role_in_game == "Role B"):
+                                            agent_game_outcome = "Win"
+                                        else: agent_game_outcome = "Loss" # Covers other player win or specific proposer loss
                                     
-                                    games_display_data.append({
-                                        "Game ID": game.get("game_id"),
+                                    games_display_list.append({
+                                        "Game ID": game_item.get("game_id"),
                                         "Opponent": get_agent_display_name(opponent_id),
-                                        "Agent Role": agent_role,
-                                        "Outcome (Agent)": agent_outcome,
-                                        "Wealth Change": f"{agent_wealth_change:.2f}" if agent_wealth_change is not None else "N/A",
-                                        "Scenario Snippet": game.get("scenario_text", "")[:70]+"..." if game.get("scenario_text") else "N/A",
-                                        "View Game Button": game.get("game_id") # For button mapping
+                                        "Agent Role": agent_role_in_game,
+                                        "Outcome (Agent)": agent_game_outcome,
+                                        "Wealth Change": f"{agent_wealth_change_val:.2f}" if agent_wealth_change_val is not None else "N/A",
+                                        "Scenario Snippet": (game_item.get("scenario_text", "")[:70]+"..." if game_item.get("scenario_text") else "N/A"),
                                     })
                                 
-                                df_agent_games = pd.DataFrame(games_display_data)
-                                
-                                # Use st.columns to create a "button column"
-                                if not df_agent_games.empty:
-                                    col_defs = {
-                                        "Game ID": st.column_config.TextColumn(width="medium"),
-                                        "Scenario Snippet": st.column_config.TextColumn(width="large")
-                                    }
-                                    st.markdown("###### Click 'View Game' to see full details in the Game Viewer tab:")
-                                    for _, row in df_agent_games.iterrows():
-                                        cols = st.columns((2,2,1,1,1,3,1))
-                                        cols[0].write(row["Game ID"])
-                                        cols[1].write(row["Opponent"])
-                                        cols[2].write(row["Agent Role"])
-                                        cols[3].write(row["Outcome (Agent)"])
-                                        cols[4].write(row["Wealth Change"])
-                                        cols[5].caption(row["Scenario Snippet"])
-                                        button_key = f"view_game_{row['Game ID']}_{selected_gen_for_agent_detail}"
-                                        if cols[6].button("👁️ View", key=button_key, help=f"View game {row['Game ID']}"):
-                                            st.session_state.selected_game_id_from_agent_detail = row['Game ID']
+                                if games_display_list:
+                                    st.markdown("###### Click '👁️ View' to see full details in the Game Viewer tab:")
+                                    for row_data in games_display_list:
+                                        game_cols = st.columns((1.5, 1.5, 1, 1, 1, 2.5, 0.5)) # Adjusted column widths
+                                        game_cols[0].write(row_data["Game ID"])
+                                        game_cols[1].write(row_data["Opponent"])
+                                        game_cols[2].write(row_data["Agent Role"] or "N/A")
+                                        game_cols[3].write(row_data["Outcome (Agent)"])
+                                        game_cols[4].write(row_data["Wealth Change"])
+                                        game_cols[5].caption(row_data["Scenario Snippet"])
+                                        button_key = f"view_game_btn_{row_data['Game ID']}_{selected_gen_for_agent_detail}"
+                                        if game_cols[6].button("👁️", key=button_key, help=f"View game {row_data['Game ID']}"):
+                                            st.session_state.selected_game_id_from_agent_detail = row_data['Game ID']
                                             st.session_state.selected_gen_for_game_viewer = selected_gen_for_agent_detail
-                                            st.session_state.active_tab = "📜 Game Viewer" # Signal to switch tab (requires rerun)
-                                            st.rerun() # Force rerun to reflect tab change and pre-selection
+                                            st.session_state.active_tab = "📜 Game Viewer"
+                                            st.rerun()
                                 else:
-                                    st.info("No game records to display in table.")
+                                    st.info("No game records to display in table.") # Should be caught by agent_games_list check
                             else:
                                 st.info(f"No game records found for this agent in generation {selected_gen_for_agent_detail}'s game file.")
                         else:
@@ -522,121 +539,118 @@ with active_tab_ui[2]: # Corresponds to "👤 Agent Detail"
                 st.warning(f"No population data for Generation {selected_gen_for_agent_detail} to select an agent.")
 
 # --- Tab 4: Game Viewer ---
-with active_tab_ui[3]: # Corresponds to "📜 Game Viewer"
+with active_tab_ui_selection[3]:
     st.header("Game Viewer")
 
-    # Handle pre-selection from Agent Detail tab
-    pre_selected_gen_num = st.session_state.get('selected_gen_for_game_viewer', None)
-    pre_selected_game_id = st.session_state.get('selected_game_id_from_agent_detail', None)
+    pre_selected_gen_gv = st.session_state.get('selected_gen_for_game_viewer', None)
+    pre_selected_game_id_gv = st.session_state.get('selected_game_id_from_agent_detail', None)
 
     if latest_gen_num_for_run is None:
         st.warning("No generation data available to select games from.")
     else:
-        gen_numbers_for_games_tab = list(range(1, latest_gen_num_for_run + 1))
-        default_gen_idx_games_tab = 0
-        if pre_selected_gen_num and pre_selected_gen_num in gen_numbers_for_games_tab:
-            default_gen_idx_games_tab = gen_numbers_for_games_tab.index(pre_selected_gen_num)
-        elif gen_numbers_for_games_tab: # Default to latest if no pre-selection
-            default_gen_idx_games_tab = len(gen_numbers_for_games_tab) -1
+        gen_numbers_for_games_viewer_tab = list(range(1, latest_gen_num_for_run + 1))
+        default_gen_idx_gv = 0
+        if pre_selected_gen_gv and pre_selected_gen_gv in gen_numbers_for_games_viewer_tab:
+            default_gen_idx_gv = gen_numbers_for_games_viewer_tab.index(pre_selected_gen_gv)
+        elif gen_numbers_for_games_viewer_tab: # Default to latest
+            default_gen_idx_gv = len(gen_numbers_for_games_viewer_tab) -1
             
-        selected_gen_for_games_viewer = st.selectbox(
+        selected_gen_for_gv = st.selectbox(
             "Select Generation (for Games)", 
-            options=gen_numbers_for_games_tab, 
+            options=gen_numbers_for_games_viewer_tab, 
             format_func=lambda x: f"Generation {x}",
-            index=default_gen_idx_games_tab,
-            key="game_viewer_gen_select"
+            index=default_gen_idx_gv,
+            key="game_viewer_gen_select_key" # Unique key
         )
 
-        if selected_gen_for_games_viewer:
-            games_data_for_viewer = load_games_for_generation(selected_run_id, selected_gen_for_games_viewer, state_dir)
-            if not games_data_for_viewer:
-                st.info(f"No game records found for Generation {selected_gen_for_games_viewer}.")
+        if selected_gen_for_gv:
+            games_data_gv = load_games_for_generation(selected_run_id, selected_gen_for_gv, state_dir)
+            if not games_data_gv:
+                st.info(f"No game records found for Generation {selected_gen_for_gv}.")
             else:
-                # Create a mapping for easier lookup if needed, or just use list of IDs
-                game_id_options = {g.get("game_id", f"UnknownGame_{i}"): g for i, g in enumerate(games_data_for_viewer)}
+                game_id_to_game_map_gv = {g.get("game_id", f"UnknownGame_{i}"): g for i, g in enumerate(games_data_gv)}
+                game_id_options_gv = list(game_id_to_game_map_gv.keys())
                 
-                default_game_id_idx = 0
-                if pre_selected_game_id and pre_selected_game_id in game_id_options and selected_gen_for_games_viewer == pre_selected_gen_num:
-                    # the pre-selected game is from the currently selected generation for safety
+                default_game_id_idx_gv = 0
+                if pre_selected_game_id_gv and pre_selected_game_id_gv in game_id_options_gv and selected_gen_for_gv == pre_selected_gen_gv:
                     try:
-                        default_game_id_idx = list(game_id_options.keys()).index(pre_selected_game_id)
-                    except ValueError:
-                        default_game_id_idx = 0 # Fallback if ID not found (should not happen if logic is correct)
+                        default_game_id_idx_gv = game_id_options_gv.index(pre_selected_game_id_gv)
+                    except ValueError: pass # Keep default 0
                 
-                # Clear the pre-selection after using it once to avoid sticky selection on manual changes
-                st.session_state.selected_game_id_from_agent_detail = None
-                st.session_state.selected_gen_for_game_viewer = None
+                # Clear pre-selection after use
+                if st.session_state.selected_game_id_from_agent_detail:
+                     st.session_state.selected_game_id_from_agent_detail = None
+                if st.session_state.selected_gen_for_game_viewer:
+                     st.session_state.selected_gen_for_game_viewer = None
 
-                selected_game_id_viewer = st.selectbox(
+
+                selected_game_id_gv = st.selectbox(
                     "Select Game ID", 
-                    options=list(game_id_options.keys()), 
-                    index=default_game_id_idx,
-                    key="game_viewer_game_select"
+                    options=game_id_options_gv, 
+                    index=default_game_id_idx_gv,
+                    key="game_viewer_game_select_key" # Unique key
                     )
                 
-                if selected_game_id_viewer:
-                    game_to_display = game_id_options.get(selected_game_id_viewer)
+                if selected_game_id_gv:
+                    game_to_display_gv = game_id_to_game_map_gv.get(selected_game_id_gv)
 
-                    if game_to_display:
-                        st.subheader(f"Details for Game: {game_to_display.get('game_id', 'N/A')}")
+                    if game_to_display_gv:
+                        st.subheader(f"Details for Game: {game_to_display_gv.get('game_id', 'N/A')}")
                         
-                        pA_id = game_to_display.get('player_A_id')
-                        pB_id = game_to_display.get('player_B_id')
-                        pA_role = game_to_display.get('player_A_game_role', 'Role A') # Default for display
-                        pB_role = game_to_display.get('player_B_game_role', 'Role B') # Default for display
+                        pA_id_gv = game_to_display_gv.get('player_A_id')
+                        pB_id_gv = game_to_display_gv.get('player_B_id')
+                        pA_role_gv = game_to_display_gv.get('player_A_game_role', 'Role A')
+                        pB_role_gv = game_to_display_gv.get('player_B_game_role', 'Role B')
                         
                         st.markdown(f"""
-                        - **Player A ({pA_role}):** {get_agent_display_name(pA_id)}
-                        - **Player B ({pB_role}):** {get_agent_display_name(pB_id)}
-                        - **Scenario Proposer:** {get_agent_display_name(game_to_display.get('proposer_agent_id'))}
-                        - **Timestamp Start:** {game_to_display.get('timestamp_start', 'N/A')}
-                        - **Timestamp End:** {game_to_display.get('timestamp_end', 'N/A')}
+                        - **Player A ({pA_role_gv}):** {get_agent_display_name(pA_id_gv)}
+                        - **Player B ({pB_role_gv}):** {get_agent_display_name(pB_id_gv)}
+                        - **Scenario Proposer:** {get_agent_display_name(game_to_display_gv.get('proposer_agent_id'))}
+                        - **Timestamp Start:** {game_to_display_gv.get('timestamp_start', 'N/A')}
+                        - **Timestamp End:** {game_to_display_gv.get('timestamp_end', 'N/A')}
                         """)
 
                         with st.expander("📜 Scenario Text", expanded=True):
-                            st.text_area("Scenario", value=game_to_display.get("scenario_text", "N/A"), height=200, disabled=True, label_visibility="collapsed")
+                            st.text_area("Scenario", value=game_to_display_gv.get("scenario_text", "N/A"), height=200, disabled=True, label_visibility="collapsed")
 
                         st.markdown("##### 💬 Conversation Transcript")
-                        transcript = game_to_display.get("transcript", [])
-                        if transcript:
-                            for turn in transcript:
-                                turn_role = turn.get('role', 'Unknown Role')
-                                speaker_agent_id = turn.get('agent_id', 'Unknown Agent')
-                                content = turn.get('content', '')
+                        transcript_gv = game_to_display_gv.get("transcript", [])
+                        if transcript_gv:
+                            for turn_gv in transcript_gv:
+                                turn_role_gv = turn_gv.get('role', 'Unknown Role')
+                                speaker_agent_id_gv = turn_gv.get('agent_id', 'Unknown Agent')
+                                content_gv = turn_gv.get('content', '')
                                 
-                                # Determine avatar based on actual game roles if possible
-                                avatar_symbol = "👤" # Default
-                                if turn_role == pA_role : # Player A's assigned role
-                                    avatar_symbol = "🧑‍💻"
-                                elif turn_role == pB_role: # Player B's assigned role
-                                    avatar_symbol = "🤖"
+                                avatar_symbol_gv = "👤" 
+                                if turn_role_gv == pA_role_gv: avatar_symbol_gv = "🧑‍💻"
+                                elif turn_role_gv == pB_role_gv: avatar_symbol_gv = "🤖"
                                 
-                                with st.chat_message(name=turn_role, avatar=avatar_symbol):
-                                    st.write(f"**{turn_role} ({get_agent_display_name(speaker_agent_id)})**: ")
-                                    st.markdown(content) # Use markdown for better formatting of LLM output
+                                with st.chat_message(name=turn_role_gv, avatar=avatar_symbol_gv):
+                                    st.write(f"**{turn_role_gv} ({get_agent_display_name(speaker_agent_id_gv)})**: ")
+                                    st.markdown(content_gv)
                         else:
                             st.info("No transcript available for this game.")
 
                         st.markdown("##### ⚖️ Adjudication & Outcome")
-                        adjudication_cols = st.columns(2)
-                        with adjudication_cols[0]:
+                        adjudication_cols_gv = st.columns(2)
+                        with adjudication_cols_gv[0]:
                             st.markdown(f"**Adjudication Result:**")
-                            st.code(game_to_display.get('adjudication_result', 'N/A'), language=None)
-                            if game_to_display.get('defaulted_to_tie_reason'):
-                                st.caption(f"Defaulted Reason: {game_to_display.get('defaulted_to_tie_reason')}")
+                            st.code(game_to_display_gv.get('adjudication_result', 'N/A'), language=None)
+                            if game_to_display_gv.get('defaulted_to_tie_reason'):
+                                st.caption(f"Defaulted Reason: {game_to_display_gv.get('defaulted_to_tie_reason')}")
                         
-                        with adjudication_cols[1]:
-                            bets = game_to_display.get("betting_details") or {}
+                        with adjudication_cols_gv[1]:
+                            bets_gv = game_to_display_gv.get("betting_details") or {}
                             st.markdown(f"""
-                            - **{pA_role} ({get_agent_display_name(pA_id)}) Bet:** {bets.get('player_A_bet', 'N/A')}
-                            - **{pB_role} ({get_agent_display_name(pB_id)}) Bet:** {bets.get('player_B_bet', 'N/A')}
+                            - **{pA_role_gv} Bet:** {bets_gv.get('player_A_bet', 'N/A')}
+                            - **{pB_role_gv} Bet:** {bets_gv.get('player_B_bet', 'N/A')}
                             """)
                         
                         st.markdown("##### 💰 Wealth Changes")
-                        wealth_c = game_to_display.get("wealth_changes") or {}
+                        wealth_c_gv = game_to_display_gv.get("wealth_changes") or {}
                         st.markdown(f"""
-                        - **{pA_role} ({get_agent_display_name(pA_id)}) Change:** {wealth_c.get('player_A_wealth_change', 'N/A')}
-                        - **{pB_role} ({get_agent_display_name(pB_id)}) Change:** {wealth_c.get('player_B_wealth_change', 'N/A')}
+                        - **{pA_role_gv} ({get_agent_display_name(pA_id_gv)}) Change:** {wealth_c_gv.get('player_A_wealth_change', 'N/A')}
+                        - **{pB_role_gv} ({get_agent_display_name(pB_id_gv)}) Change:** {wealth_c_gv.get('player_B_wealth_change', 'N/A')}
                         """)
                     else:
                         st.error("Could not find details for the selected game ID.")
