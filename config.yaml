@@ -39,7 +39,7 @@ generation:
 
       Later, you will be randomly assigned one of the roles. The game can be anything: any concept, style, description, rules, scenario, setting, constraints, etc.
 
-      The game will be purely text-based and multi-turn.
+      The game will be purely text-based and multi-turn. Define win criteria clearly: avoid having to tie if possible.
       
       The required tags and their expected content are:
 
@@ -56,7 +56,7 @@ generation:
           *   Content: Explain the conditions under which a player or role wins the game. The text content *within this tag* MUST include the phrase 'win criteria'.
 
       5.  ` <tie_criteria> ... </tie_criteria> `
-          *   Content: Explain the conditions under which the game results in a tie. If ties are not possible, explicitly state that. The text content *within this tag* MUST include the phrase 'tie criteria'.
+          *   Content: Explain the conditions under which the game results in a tie. Ties should typically be reserved for exceptional circumstances. If ties are not possible, explicitly state that. The text content *within this tag* MUST include the phrase 'tie criteria'.
 
       6.  ` <proposer_role> ... </proposer_role> `
           *   Content: Indicate which role is designated as the proposer or first mover for this game setup. The content of this tag MUST be exactly 'Role A' or 'Role B'.
