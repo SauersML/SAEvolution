@@ -93,7 +93,7 @@ generation:
       {history}
 
       {role} (Respond according to your role and objective):
-    max_tokens: 150
+    max_tokens: 1000
     temperature: 0.6
 
 adjudicator:
@@ -110,7 +110,7 @@ adjudicator:
       Note: assign ties only when the scenario and game context is very evenly matched with no possible way to decide a winner. If one role is doing better, assign it to win.
 
       Task: Based ONLY on the scenario's win criteria and the interaction, determine the outcome. Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.
-  max_tokens: 20
+  max_tokens: 1000
   temperature: 0.0
 
 logging:
