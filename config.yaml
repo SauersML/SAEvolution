@@ -12,7 +12,8 @@ evolution:
   learning_rate: 0.1
   num_winning_features: 3 # Number of top features from winning games to reinforce.
   num_losing_features: 3  # Number of top features from losing games to suppress.
-  contrast_top_k: 10      # Number of features to request from contrastive analysis for each set (winning/losing).
+  inspect_top_k: 10       # Number of top activated features to retrieve from game inspection via client.features.inspect().top(k).
+  inspect_aggregate_by: "max" # Method to aggregate feature activations by inspect. Options: "frequency", "mean", "max", "sum".
   activation_min: -5.0    # Minimum allowed activation value for a feature.
   activation_max: 5.0     # Maximum allowed activation value for a feature.
   target_positive: 1.0    # Target activation for features reinforced due to winning (if update_method is 'target').
