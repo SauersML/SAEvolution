@@ -358,7 +358,13 @@ def run_simulation(args):
                  break
             logging.info(f"Calculated fitness for Generation {gen_num}.")
             
-            next_population = evolve_population(population_after_round, fitness_scores_list, config)
+            # Pass generation_game_details to evolve_population
+            next_population = evolve_population(
+                population_after_round, 
+                fitness_scores_list, 
+                config,
+                generation_game_details # Pass the list of game detail dicts
+            )
             if not isinstance(next_population, list) or len(next_population) != len(population_after_round): # Should maintain pop size
                  logging.error(f"Population state invalid after evolution in Generation {gen_num}. Expected {len(population_after_round)} agents, got {len(next_population)}. Aborting.")
                  break
