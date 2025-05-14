@@ -953,134 +953,134 @@ with tab_container_map["🧬 Feature Explorer"]:
 with tab_container_map["🔬 Generation Detail"]:
     st.header("🔬 Generation Detail")
 
+
+
+
     latest_gen = run_data.get("latest_generation_number", 0)
     all_generations_data = run_data.get("all_generation_data", {})
-    progenitor_map = run_data.get("progenitor_map", {})
-    all_active_features = run_data.get("all_active_features", {})
+    progenitor_map = run_data.get("progenitor_map", {}) # Added from context
+    all_active_features = run_data.get("all_active_features", {}) # Added from context
 
     if latest_gen == 0:
-        st.info("No generation data available to display details.")
-        return
-
-    # Generation selection slider
-    # Default to the generation context from navigation, or latest generation
-    default_gen_val_slider = st.session_state.get("nav_target_generation", latest_gen)
-    if not (isinstance(default_gen_val_slider, int) and 1 <= default_gen_val_slider <= latest_gen):
-        default_gen_val_slider = latest_gen
-    
-    selected_gen_num_for_detail = default_gen_val_slider
-    if latest_gen > 1:
-        selected_gen_num_for_detail = st.slider(
-            "Select Generation to View Details",
-            min_value=1, max_value=latest_gen, value=default_gen_val_slider,
-            key=UIElementKeyGenerator.create("slider", "gen_detail_generation_select")
-        )
+        st.info("No generation data available to display details.") # Modified st.info text slightly
     else:
-        st.markdown("Displaying details for Generation 1 (the only generation available).")
-    
-    # Persist this selection for potential cross-tab navigation context
-    st.session_state.nav_target_generation = selected_gen_num_for_detail
-
-    gen_data_for_display = all_generations_data.get(selected_gen_num_for_detail)
-    if not gen_data_for_display:
-        st.error(f"Data for Generation {selected_gen_num_for_detail} could not be loaded or is missing.")
-        return
-
-    st.subheader(f"Summary for Generation {selected_gen_num_for_detail}")
-    summary_metrics_data = gen_data_for_display.get("generation_summary_metrics", {})
-    
-    metric_cols = st.columns(4)
-    metric_cols[0].metric("Avg Fitness", f"{summary_metrics_data.get('avg_fitness', 0.0):.3f}")
-    metric_cols[1].metric("Max Fitness", f"{summary_metrics_data.get('max_fitness', 0.0):.3f}")
-    metric_cols[2].metric("Avg Wealth", f"{summary_metrics_data.get('avg_wealth', 0.0):.2f}")
-    metric_cols[3].metric("Games Played", summary_metrics_data.get('total_games_played_in_generation', "N/A"))
-
-    st.markdown("##### Population Snapshot")
-    population_state_list = gen_data_for_display.get("population_state", [])
-    if population_state_list:
-        agents_table_data = []
-        fitness_map_for_gen_detail = summary_metrics_data.get("fitness_scores_map", {})
-        for agent_rec in population_state_list:
-            agent_id_val = agent_rec.get("agent_id")
-            fitness_val = agent_rec.get("fitness_score", fitness_map_for_gen_detail.get(agent_id_val))
-            genome_data_val = agent_rec.get("genome", {})
-            
-            agents_table_data.append({
-                "Agent ID (Short)": get_agent_display_name(agent_id_val),
-                "Parent ID (Short)": get_agent_display_name(agent_rec.get('parent_id')) if agent_rec.get('parent_id') else "N/A (Gen 1)",
-                "Progenitor (Short)": get_agent_display_name(progenitor_map.get(agent_id_val)),
-                "Wealth": float(agent_rec.get("wealth", 0.0)),
-                "Fitness": float(fitness_val) if fitness_val is not None else None,
-                "Genome Size": len(genome_data_val),
-                "_raw_agent_id": agent_id_val # For potential navigation
-            })
+        # Generation selection slider
+        # Default to the generation context from navigation, or latest generation
+        default_gen_val_slider = st.session_state.get("nav_target_generation", latest_gen)
+        if not (isinstance(default_gen_val_slider, int) and 1 <= default_gen_val_slider <= latest_gen):
+            default_gen_val_slider = latest_gen
         
-        df_agents_snapshot = pd.DataFrame(agents_table_data)
-        st.dataframe(
-            df_agents_snapshot[["Agent ID (Short)", "Parent ID (Short)", "Progenitor (Short)", "Wealth", "Fitness", "Genome Size"]], 
-            use_container_width=True, hide_index=True,
-            column_config={
-                "Wealth": st.column_config.NumberColumn(format="%.2f"),
-                "Fitness": st.column_config.NumberColumn(format="%.3f")
-            }
-        )
-    else:
-        st.caption("No population data available for this generation.")
-
-    # Population Genome Heatmap (Top N features by absolute activation magnitude)
-    st.markdown("##### Population Genome Heatmap (Top Features by Max Absolute Activation)")
-    if population_state_list:
-        feature_max_abs_activations_map = defaultdict(float)
-        for agent_rec in population_state_list:
-            genome_data = agent_rec.get("genome", {})
-            for f_uuid_val, f_data_val in genome_data.items():
-                act_val = f_data_val.get('activation',0.0) if isinstance(f_data_val, dict) else float(f_data_val or 0.0)
-                if abs(act_val) > feature_max_abs_activations_map[f_uuid_val]:
-                    feature_max_abs_activations_map[f_uuid_val] = abs(act_val)
-        
-        # Select top N features based on their maximum absolute activation in this generation
-        num_features_for_heatmap = 5 
-        sorted_features_by_max_abs = sorted(
-            feature_max_abs_activations_map.items(), key=lambda item: item[1], reverse=True
-        )
-        top_n_feature_uuids_heatmap = [item[0] for item in sorted_features_by_max_abs[:num_features_for_heatmap]]
-
-        if top_n_feature_uuids_heatmap:
-            heatmap_plot_data = []
-            for agent_rec in population_state_list:
-                agent_id_short_name = get_agent_display_name(agent_rec.get('agent_id'))
-                genome_data = agent_rec.get("genome", {})
-                for f_uuid_heatmap in top_n_feature_uuids_heatmap:
-                    feature_raw_val = genome_data.get(f_uuid_heatmap)
-                    activation_for_heatmap = 0.0
-                    if feature_raw_val is not None:
-                        activation_for_heatmap = feature_raw_val.get('activation',0.0) if isinstance(feature_raw_val, dict) else float(feature_raw_val or 0.0)
-                    
-                    heatmap_plot_data.append({
-                        "agent_label": agent_id_short_name,
-                        "feature_display_label": get_feature_display_name(f_uuid_heatmap, all_active_features.get(f_uuid_heatmap)),
-                        "activation_level": activation_for_heatmap
-                    })
-            
-            if heatmap_plot_data:
-                df_heatmap_plot = pd.DataFrame(heatmap_plot_data)
-                genome_heatmap_chart = alt.Chart(df_heatmap_plot).mark_rect().encode(
-                    x=alt.X('feature_display_label:N', title='Feature', sort=None), 
-                    y=alt.Y('agent_label:N', title='Agent', sort=None),
-                    color=alt.Color('activation_level:Q', 
-                                    scale=alt.Scale(scheme='redblue', domain=[-1, 1], clamp=True), 
-                                    legend=alt.Legend(title="Activation Level")),
-                    tooltip=['agent_label', 'feature_display_label', alt.Tooltip('activation_level:Q', format=".3f")]
-                ).properties(title=f"Top {num_features_for_heatmap} Feature Activations (Generation {selected_gen_num_for_detail})").interactive()
-                st.altair_chart(genome_heatmap_chart, use_container_width=True)
-            else:
-                st.caption("Not enough data to render genome heatmap.")
+        selected_gen_num_for_detail = default_gen_val_slider
+        if latest_gen > 1:
+            selected_gen_num_for_detail = st.slider(
+                "Select Generation to View Details",
+                min_value=1, max_value=latest_gen, value=default_gen_val_slider,
+                key=UIElementKeyGenerator.create("slider", "gen_detail_generation_select")
+            )
         else:
-            st.caption("No features found with significant activations for heatmap display.")
-    else:
-        st.caption("No population data to generate genome heatmap.")
-    
-    
+            st.markdown("Displaying details for Generation 1 (the only generation available).")
+        
+        # Persist this selection for potential cross-tab navigation context
+        st.session_state.nav_target_generation = selected_gen_num_for_detail
+
+        gen_data_for_display = all_generations_data.get(selected_gen_num_for_detail)
+        if not gen_data_for_display:
+            st.error(f"Data for Generation {selected_gen_num_for_detail} could not be loaded or is missing.")
+        else:
+            st.subheader(f"Summary for Generation {selected_gen_num_for_detail}")
+            summary_metrics_data = gen_data_for_display.get("generation_summary_metrics", {})
+            
+            metric_cols = st.columns(4)
+            metric_cols[0].metric("Avg Fitness", f"{summary_metrics_data.get('avg_fitness', 0.0):.3f}")
+            metric_cols[1].metric("Max Fitness", f"{summary_metrics_data.get('max_fitness', 0.0):.3f}")
+            metric_cols[2].metric("Avg Wealth", f"{summary_metrics_data.get('avg_wealth', 0.0):.2f}")
+            metric_cols[3].metric("Games Played", summary_metrics_data.get('total_games_played_in_generation', "N/A"))
+
+            st.markdown("##### Population Snapshot")
+            population_state_list = gen_data_for_display.get("population_state", [])
+            if population_state_list:
+                agents_table_data = []
+                fitness_map_for_gen_detail = summary_metrics_data.get("fitness_scores_map", {})
+                for agent_rec in population_state_list:
+                    agent_id_val = agent_rec.get("agent_id")
+                    fitness_val = agent_rec.get("fitness_score", fitness_map_for_gen_detail.get(agent_id_val))
+                    genome_data_val = agent_rec.get("genome", {})
+                    
+                    agents_table_data.append({
+                        "Agent ID (Short)": get_agent_display_name(agent_id_val),
+                        "Parent ID (Short)": get_agent_display_name(agent_rec.get('parent_id')) if agent_rec.get('parent_id') else "N/A (Gen 1)",
+                        "Progenitor (Short)": get_agent_display_name(progenitor_map.get(agent_id_val)),
+                        "Wealth": float(agent_rec.get("wealth", 0.0)),
+                        "Fitness": float(fitness_val) if fitness_val is not None else None,
+                        "Genome Size": len(genome_data_val),
+                        "_raw_agent_id": agent_id_val # For potential navigation
+                    })
+                
+                df_agents_snapshot = pd.DataFrame(agents_table_data)
+                st.dataframe(
+                    df_agents_snapshot[["Agent ID (Short)", "Parent ID (Short)", "Progenitor (Short)", "Wealth", "Fitness", "Genome Size"]], 
+                    use_container_width=True, hide_index=True,
+                    column_config={
+                        "Wealth": st.column_config.NumberColumn(format="%.2f"),
+                        "Fitness": st.column_config.NumberColumn(format="%.3f")
+                    }
+                )
+            else:
+                st.caption("No population data available for this generation.")
+
+            # Population Genome Heatmap (Top N features by absolute activation magnitude)
+            st.markdown("##### Population Genome Heatmap (Top Features by Max Absolute Activation)")
+            if population_state_list:
+                feature_max_abs_activations_map = defaultdict(float)
+                for agent_rec in population_state_list:
+                    genome_data = agent_rec.get("genome", {})
+                    for f_uuid_val, f_data_val in genome_data.items():
+                        act_val = f_data_val.get('activation',0.0) if isinstance(f_data_val, dict) else float(f_data_val or 0.0)
+                        if abs(act_val) > feature_max_abs_activations_map[f_uuid_val]:
+                            feature_max_abs_activations_map[f_uuid_val] = abs(act_val)
+                
+                # Select top N features based on their maximum absolute activation in this generation
+                num_features_for_heatmap = 5 
+                sorted_features_by_max_abs = sorted(
+                    feature_max_abs_activations_map.items(), key=lambda item: item[1], reverse=True
+                )
+                top_n_feature_uuids_heatmap = [item[0] for item in sorted_features_by_max_abs[:num_features_for_heatmap]]
+
+                if top_n_feature_uuids_heatmap:
+                    heatmap_plot_data = []
+                    for agent_rec in population_state_list:
+                        agent_id_short_name = get_agent_display_name(agent_rec.get('agent_id'))
+                        genome_data = agent_rec.get("genome", {})
+                        for f_uuid_heatmap in top_n_feature_uuids_heatmap:
+                            feature_raw_val = genome_data.get(f_uuid_heatmap)
+                            activation_for_heatmap = 0.0
+                            if feature_raw_val is not None:
+                                activation_for_heatmap = feature_raw_val.get('activation',0.0) if isinstance(feature_raw_val, dict) else float(feature_raw_val or 0.0)
+                            
+                            heatmap_plot_data.append({
+                                "agent_label": agent_id_short_name,
+                                "feature_display_label": get_feature_display_name(f_uuid_heatmap, all_active_features.get(f_uuid_heatmap)),
+                                "activation_level": activation_for_heatmap
+                            })
+                    
+                    if heatmap_plot_data:
+                        df_heatmap_plot = pd.DataFrame(heatmap_plot_data)
+                        genome_heatmap_chart = alt.Chart(df_heatmap_plot).mark_rect().encode(
+                            x=alt.X('feature_display_label:N', title='Feature', sort=None), 
+                            y=alt.Y('agent_label:N', title='Agent', sort=None),
+                            color=alt.Color('activation_level:Q', 
+                                            scale=alt.Scale(scheme='redblue', domain=[-1, 1], clamp=True), 
+                                            legend=alt.Legend(title="Activation Level")),
+                            tooltip=['agent_label', 'feature_display_label', alt.Tooltip('activation_level:Q', format=".3f")]
+                        ).properties(title=f"Top {num_features_for_heatmap} Feature Activations (Generation {selected_gen_num_for_detail})").interactive()
+                        st.altair_chart(genome_heatmap_chart, use_container_width=True)
+                    else:
+                        st.caption("Not enough data to render genome heatmap.")
+                else:
+                    st.caption("No features found with significant activations for heatmap display.")
+            else:
+                st.caption("No population data to generate genome heatmap.")
+
     # Handle navigation or direct selection for the generation to display.
     # If only one generation exists, it must be 1. Otherwise, allow selection via slider.
     if latest_gen_num == 1:
