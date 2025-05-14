@@ -454,11 +454,35 @@ tab_container_map = {name: tab_ui_objects[i] for i, name in enumerate(tab_names)
 # --- Tab Implementations ---
 
 # Helper for navigation buttons
-def create_nav_button(label, target_tab, nav_state_key, nav_state_value, params=None):
-    if st.button(label, key=f"nav_btn_{nav_state_key}_{nav_state_value}_{target_tab}"):
+def create_nav_button(label, target_tab, nav_state_key, nav_state_value, params=None, key_suffix=None):
+    """
+    Creates a Streamlit button that, when clicked, navigates to a specified tab and
+    sets associated navigation state in st.session_state.
+
+    Args:
+        label (str): The text to display on the button.
+        target_tab (str): The key of the tab (from TABS) to navigate to.
+        nav_state_key (str): The session state key to update with nav_state_value (e.g., 'nav_to_agent_id').
+        nav_state_value (any): The value to set for nav_state_key (e.g., an agent ID).
+        params (dict, optional): Additional key-value pairs to set in st.session_state. Defaults to None.
+        key_suffix (str, optional): A suffix to append to the button's generated key to ensure uniqueness
+                                    if multiple buttons might otherwise have the same base key. Defaults to None.
+    """
+    # Ensure components of the key are strings for reliable key generation.
+    str_nav_state_key = str(nav_state_key)
+    str_nav_state_value = str(nav_state_value)
+    str_target_tab = str(target_tab)
+
+    base_key = f"nav_btn_{str_nav_state_key}_{str_nav_state_value}_{str_target_tab}"
+    
+    final_key = base_key
+    if key_suffix and isinstance(key_suffix, str) and key_suffix.strip(): # Append suffix if it's a non-empty string
+        final_key = f"{base_key}_{key_suffix.strip()}"
+        
+    if st.button(label, key=final_key):
         st.session_state.active_tab = target_tab
-        st.session_state[nav_state_key] = nav_state_value
-        if params: # For additional context like generation number
+        st.session_state[nav_state_key] = nav_state_value # Store the original (potentially non-string) nav_state_value
+        if params: # For additional context like generation number or other parameters
             for k, v in params.items():
                 st.session_state[k] = v
         st.rerun()
@@ -1228,12 +1252,24 @@ with tab_container_map["👤 Agent Detail"]:
                                 st.markdown("##### Evolutionary Inputs (From Parent's Last Round)")
                             if pos_inputs:
                                 st.markdown("**Features Reinforced (Parent Won With These):**")
-                                for f_uuid_pos in pos_inputs:
-                                    create_nav_button(get_feature_display_name(f_uuid_pos, all_active_features.get(f_uuid_pos)), "🧬 Feature Explorer", "nav_to_feature_uuid", f_uuid_pos)
+                                for i, f_uuid_pos in enumerate(pos_inputs): # Use enumerate to get an index
+                                    create_nav_button(
+                                        get_feature_display_name(f_uuid_pos, all_active_features.get(f_uuid_pos)), 
+                                        "🧬 Feature Explorer", 
+                                        "nav_to_feature_uuid", 
+                                        f_uuid_pos,
+                                        key_suffix=f"pos_input_feature_{i}" # Indexed suffix for uniqueness
+                                    )
                             if neg_inputs:
                                 st.markdown("**Features Suppressed (Parent Lost With These):**")
-                                for f_uuid_neg in neg_inputs:
-                                    create_nav_button(get_feature_display_name(f_uuid_neg, all_active_features.get(f_uuid_neg)), "🧬 Feature Explorer", "nav_to_feature_uuid", f_uuid_neg)
+                                for i, f_uuid_neg in enumerate(neg_inputs): # Use enumerate to get an index
+                                    create_nav_button(
+                                        get_feature_display_name(f_uuid_neg, all_active_features.get(f_uuid_neg)), 
+                                        "🧬 Feature Explorer", 
+                                        "nav_to_feature_uuid", 
+                                        f_uuid_neg,
+                                        key_suffix=f"neg_input_feature_{i}" # Indexed suffix for uniqueness
+                                    )
                                 st.markdown("---")
 
 
@@ -1338,10 +1374,24 @@ with tab_container_map["📜 Game Viewer"]:
                     game_info_cols = st.columns(2)
                     with game_info_cols[0]:
                         st.markdown(f"**Player A ({pA_role}):**")
-                        create_nav_button(get_agent_display_name(pA_id), "👤 Agent Detail", "nav_to_agent_id", pA_id, params={'nav_to_generation': selected_gen_for_games})
+                        create_nav_button(
+                            get_agent_display_name(pA_id), 
+                            "👤 Agent Detail", 
+                            "nav_to_agent_id", 
+                            pA_id, 
+                            params={'nav_to_generation': selected_gen_for_games},
+                            key_suffix="playerA_game_viewer_link" # Unique suffix for Player A button
+                        )
                     with game_info_cols[1]:
                         st.markdown(f"**Player B ({pB_role}):**")
-                        create_nav_button(get_agent_display_name(pB_id), "👤 Agent Detail", "nav_to_agent_id", pB_id, params={'nav_to_generation': selected_gen_for_games})
+                        create_nav_button(
+                            get_agent_display_name(pB_id), 
+                            "👤 Agent Detail", 
+                            "nav_to_agent_id", 
+                            pB_id, 
+                            params={'nav_to_generation': selected_gen_for_games},
+                            key_suffix="playerB_game_viewer_link" # Unique suffix for Player B button
+                        )
                     
                     st.markdown(f"**Scenario Proposer:** {get_agent_display_name(game_to_display.get('proposer_agent_id'))}")
 
