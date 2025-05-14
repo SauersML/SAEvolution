@@ -827,10 +827,19 @@ def adjudicate_interaction(scenario_info: dict, transcript_with_ids: str, config
                     # Parse the <outcome> tag from the second response
                     raw_outcome_tag_content = _extract_xml_tag_content("outcome", raw_output_outcome_ids)
                     
+                    # Try parsing primary message ID tag names, then fall back to alternatives
                     win_message_id_temp = _extract_xml_tag_content("win_message_id", raw_output_outcome_ids)
+                    if not win_message_id_temp: # If primary tag not found or empty, try the alternative
+                        logging.debug("Primary tag <win_message_id> not found or empty, trying <message_id_win>.")
+                        win_message_id_temp = _extract_xml_tag_content("message_id_win", raw_output_outcome_ids)
+
                     lose_message_id_temp = _extract_xml_tag_content("lose_message_id", raw_output_outcome_ids)
+                    if not lose_message_id_temp: # If primary tag not found or empty, try the alternative
+                        logging.debug("Primary tag <lose_message_id> not found or empty, trying <message_id_loss>.")
+                        lose_message_id_temp = _extract_xml_tag_content("message_id_loss", raw_output_outcome_ids)
 
                     valid_msg_id_pattern = r"^[AB][1-3]$"
+                    
                     is_win_msg_id_valid = bool(win_message_id_temp and re.match(valid_msg_id_pattern, win_message_id_temp))
                     is_lose_msg_id_valid = bool(lose_message_id_temp and re.match(valid_msg_id_pattern, lose_message_id_temp))
 
