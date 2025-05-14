@@ -105,6 +105,7 @@ adjudicator:
 
     Your task is to provide a detailed step-by-step thought process for adjudicating this game.
     The contents of your reply should be contained ONLY within a single <scratchpad> XML tag.
+    The game is over. The outcome must be determined from what has already occured. Try to figure out who played best even if the game has not reached a natural conclusion.
 
     Inside the <scratchpad> tag:
     - Think step-by-step about the game flow, key moments, and how each player's actions related to the win criteria and objectives.
