@@ -257,6 +257,66 @@ def load_full_run_data(run_id: str, state_base_dir: str):
                     })
                     feature_activation_thresholds_met[f_uuid] = True # Mark as met for this feature
 
+    # Add Game Outcome events and Evolutionary Feature Update events
+    for gen_num in range(1, latest_generation_number + 1):
+        # Evolutionary Feature Update Events (from offspring in this generation)
+        if gen_num in all_generation_data:
+            gen_data_for_evo_events = all_generation_data[gen_num]
+            population_for_evo_events = gen_data_for_evo_events.get("population_state", [])
+            gen_timestamp_for_evo_events = gen_data_for_evo_events.get("timestamp_completed")
+
+            for agent_dict_evo in population_for_evo_events:
+                agent_id_evo = agent_dict_evo.get('agent_id')
+                pos_features = agent_dict_evo.get('evolutionary_input_positive_features', [])
+                neg_features = agent_dict_evo.get('evolutionary_input_negative_features', [])
+
+                if pos_features:
+                    top_feature_uuid = pos_features[0] # Log the first one as representative
+                    feature_label = all_active_features.get(top_feature_uuid, f"UUID {top_feature_uuid[:8]}")
+                    interesting_events.append({
+                        "generation": gen_num,
+                        "timestamp": gen_timestamp_for_evo_events,
+                        "type": "Feature Reinforced",
+                        "description": f"Agent {get_agent_display_name(agent_id_evo)}: Feature '{get_feature_display_name(top_feature_uuid, feature_label)}' reinforced (parent won)."
+                    })
+                if neg_features:
+                    top_feature_uuid = neg_features[0] # Log the first one
+                    feature_label = all_active_features.get(top_feature_uuid, f"UUID {top_feature_uuid[:8]}")
+                    interesting_events.append({
+                        "generation": gen_num,
+                        "timestamp": gen_timestamp_for_evo_events,
+                        "type": "Feature Suppressed",
+                        "description": f"Agent {get_agent_display_name(agent_id_evo)}: Feature '{get_feature_display_name(top_feature_uuid, feature_label)}' suppressed (parent lost)."
+                    })
+
+        # Game Outcome Events
+        games_this_gen = load_games_for_generation_cached(run_id, gen_num, state_base_dir)
+        for game in games_this_gen:
+            game_id_short = game.get("game_id", "UnknownGame")[:15]
+            pA_id = game.get("player_A_id")
+            pB_id = game.get("player_B_id")
+            pA_role = game.get("player_A_game_role", "Role A")
+            pB_role = game.get("player_B_game_role", "Role B")
+            adj_result = game.get("adjudication_result", "Unknown")
+            game_timestamp = game.get("timestamp_end", game.get("timestamp_start"))
+
+            outcome_desc = "Unknown Outcome"
+            if adj_result == "Role A Wins":
+                outcome_desc = f"{pA_role} ({get_agent_display_name(pA_id)}) Wins vs {pB_role} ({get_agent_display_name(pB_id)})"
+            elif adj_result == "Role B Wins":
+                outcome_desc = f"{pB_role} ({get_agent_display_name(pB_id)}) Wins vs {pA_role} ({get_agent_display_name(pA_id)})"
+            elif "Tie" in adj_result: # Catches "Tie", "Tie (Defaulted)" etc.
+                outcome_desc = f"Tie between {pA_role} ({get_agent_display_name(pA_id)}) and {pB_role} ({get_agent_display_name(pB_id)})"
+            else: # Other results like errors
+                outcome_desc = f"Result: {adj_result} for {pA_role} ({get_agent_display_name(pA_id)}) vs {pB_role} ({get_agent_display_name(pB_id)})"
+
+            interesting_events.append({
+                "generation": gen_num,
+                "timestamp": game_timestamp,
+                "type": "Game Outcome",
+                "description": f"Game {game_id_short}...: {outcome_desc}"
+            })
+
     # Sort interesting events by generation then timestamp
     interesting_events.sort(key=lambda x: (x["generation"], x.get("timestamp", "")))
 
@@ -1412,6 +1472,49 @@ with tab_container_map["📜 Game Viewer"]:
                     else: st.info("No transcript.")
 
                     st.markdown("##### ⚖️ Adjudication & Outcome")
+                    adj_result = game_to_display.get("adjudication_result", "N/A")
+                    adj_prompt = game_to_display.get("adjudication_prompt")
+                    adj_raw_llm_output = game_to_display.get("adjudication_raw_llm_output")
+                    wealth_ch = game_to_display.get("wealth_changes", {})
+                    final_a_wealth = game_to_display.get("final_player_A_wealth")
+                    final_b_wealth = game_to_display.get("final_player_B_wealth")
+                    default_tie_reason = game_to_display.get("defaulted_to_tie_reason")
+                    betting_details = game_to_display.get("betting_details")
+
+                    st.metric("Adjudication Result", str(adj_result)) # Ensure it's a string
+
+                    if default_tie_reason:
+                        st.caption(f"Note on Outcome: {default_tie_reason}")
+                    
+                    col_wealth_outcome1, col_wealth_outcome2 = st.columns(2)
+                    with col_wealth_outcome1:
+                        player_A_wealth_change_val = wealth_ch.get('player_A_wealth_change', 0.0)
+                        st.write(f"Player A ({pA_role}) Wealth Change: {player_A_wealth_change_val:+.2f}")
+                        if final_a_wealth is not None:
+                            st.write(f"Player A ({pA_role}) Final Wealth: {float(final_a_wealth):.2f}")
+                        else:
+                            st.write(f"Player A ({pA_role}) Final Wealth: N/A")
+                    
+                    with col_wealth_outcome2:
+                        player_B_wealth_change_val = wealth_ch.get('player_B_wealth_change', 0.0)
+                        st.write(f"Player B ({pB_role}) Wealth Change: {player_B_wealth_change_val:+.2f}")
+                        if final_b_wealth is not None:
+                            st.write(f"Player B ({pB_role}) Final Wealth: {float(final_b_wealth):.2f}")
+                        else:
+                            st.write(f"Player B ({pB_role}) Final Wealth: N/A")
+
+                    if betting_details:
+                        with st.expander("Betting Details"):
+                            st.json(betting_details)
+                    
+                    if adj_prompt:
+                        with st.expander("Adjudication Prompt"):
+                            st.text_area("Adjudicator Prompt Sent", value=adj_prompt, height=200, disabled=True, key=f"adj_prompt_{selected_game_id_viewer}")
+                    
+                    if adj_raw_llm_output and adj_raw_llm_output != adj_result : # Show raw output if it's different from the cleaned result
+                        with st.expander("Raw Adjudicator LLM Output"):
+                             st.text_area("Raw Output from Adjudicator LLM", value=adj_raw_llm_output, height=100, disabled=True, key=f"adj_raw_{selected_game_id_viewer}")
+
 
 # --- 🗓️ Event Log Tab ---
 with tab_container_map["🗓️ Event Log"]:
