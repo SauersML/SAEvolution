@@ -398,7 +398,8 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         game_details_dict["scenario_text"] = game_details_dict.get("scenario_text", "Error due to critical failure in game.") # Preserve if set, else update
         # prompt fields are at least None if an error occurred before they were set
         game_details_dict.setdefault("scenario_generation_prompt", "Unavailable due to critical error")
-        game_details_dict.setdefault("adjudication_prompt", "Unavailable due to critical error")
+        game_details_dict.setdefault("adjudication_prompt_scratchpad", "Unavailable due to critical error")
+        game_details_dict.setdefault("adjudication_prompt_outcome_ids", "Unavailable due to critical error")
         # Wealth changes remain 0,0
 
     finally:
