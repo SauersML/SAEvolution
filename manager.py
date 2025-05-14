@@ -543,16 +543,27 @@ def evolve_population(
                     logging.debug(f"Inspecting game transcript for parent {parent_agent.agent_id} (outcome: {outcome}) using aggregate_by='{inspect_aggregate_by_val}'")
 
                     context_inspector = client.features.inspect(
-                        messages=transcript, # transcript should be List[ChatMessage]
+                        messages=transcript_for_inspection, # Use the full transcript
                         model=parent_variant,
-                        features=None,
+                        features=None, # Inspect all features as per Goodfire default
                         aggregate_by=inspect_aggregate_by_val
                     )
 
                     top_feature_activations = context_inspector.top(k=inspect_top_k_val)
-                    activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature')]
+                    # The FeatureActivation object has 'feature' and 'activation' attributes.
+                    # The 'feature' attribute is a goodfire.Feature object.
+                    activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature') and fa.feature is not None]
 
-                    logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}): Inspected game, found {len(activated_features_in_game)} top active features.")
+
+                    logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): Inspected game, found {len(activated_features_in_game)} top active features from {len(top_feature_activations)} FeatureActivation objects.")
+                    if activated_features_in_game: 
+                        logging.info(f"Parent {parent_agent.agent_id} - First few activated features from inspect (UUIDs): {[str(f.uuid) for f in activated_features_in_game[:3] if f and hasattr(f, 'uuid')]}")
+                        logging.debug(f"Parent {parent_agent.agent_id} - Full top_feature_activations object from inspect: {top_feature_activations}")
+                    elif top_feature_activations: # Some FeatureActivation objects returned, but no actual features in them
+                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): client.features.inspect().top() returned {len(top_feature_activations)} FeatureActivation objects, but none contained valid .feature attributes.")
+                    else: # top_feature_activations itself was empty or None
+                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): client.features.inspect().top() returned no FeatureActivation objects.")
+
 
                     if outcome == 'win':
                         features_to_reinforce_objs = activated_features_in_game
