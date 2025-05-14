@@ -233,93 +233,115 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
              logging.warning(f"Empty content received from API for scenario generation (Agent: {proposer_agent.agent_id}).")
              return None, final_prompt_text
 
-        content_to_parse = llm_raw_output_text.strip()
-
-        # Fix common LLM quirk: extraneous periods before tags
-        for tag_name_to_sanitize in expected_tag_sequence:
-            # Period at line start: . <tag>
-            content_to_parse = re.sub(rf"^\s*\.\s*(<{tag_name_to_sanitize}>)", r"\1", content_to_parse, flags=re.MULTILINE)
-            # Period after a previous tag: </prev_tag> . <tag>
-            content_to_parse = re.sub(rf"(>\s*)\.\s*(<{tag_name_to_sanitize}>)", r"\1\2", content_to_parse)
-        
-        # Try to isolate the main block of XML from the first expected tag to the last.
-        # This discards prefix/suffix junk outside the core tag sequence.
-        first_tag_opener_str = f"<{expected_tag_sequence[0]}>"
-        last_tag_closer_str = f"</{expected_tag_sequence[-1]}>"
-
-        # Find the first occurrence of the first tag's opener
-        first_tag_match = re.search(re.escape(first_tag_opener_str), content_to_parse)
-        start_slice_index = 0
-        if first_tag_match:
-            start_slice_index = first_tag_match.start()
-        else:
-            logging.warning(f"First expected tag '{first_tag_opener_str}' not found in content by sanitizer. Parsing will proceed on dot-fixed content. Agent: {proposer_agent.agent_id}.")
-            # No change to start_slice_index, will parse from beginning of dot-fixed string.
-
-        # Find the last occurrence of the last tag's closer
-        # We search in the full string (after dot fixing) to find the true end of the block.
-        end_slice_index = len(content_to_parse)
-        # Find all matches and take the one that ends latest.
-        last_tag_matches = list(re.finditer(re.escape(last_tag_closer_str), content_to_parse))
-        if last_tag_matches:
-            # Get the match object that has the maximum end position
-            final_match = max(last_tag_matches, key=lambda m: m.end())
-            end_slice_index = final_match.end()
-        else:
-            logging.warning(f"Last expected tag '{last_tag_closer_str}' not found in content by sanitizer. Parsing will proceed on potentially un-truncated content. Agent: {proposer_agent.agent_id}.")
-            # No change to end_slice_index, will parse up to end of dot-fixed string.
-        
-        # Slice the content to the identified block
-        content_to_parse = content_to_parse[start_slice_index:end_slice_index].strip()
-
-        if not content_to_parse:
-            logging.warning(f"Content for agent {proposer_agent.agent_id} became empty after sanitization/isolation. Original raw: '{llm_raw_output_text[:200]}...'")
-            return None, final_prompt_text
-        
-        if content_to_parse != llm_raw_output_text.strip() and \
-           (llm_raw_output_text.strip().startswith(".") or not (llm_raw_output_text.strip().startswith(first_tag_opener_str) and llm_raw_output_text.strip().endswith(last_tag_closer_str))):
-            # Log if sanitization made a substantive change (beyond simple stripping)
-             logging.info(f"LLM output was pre-processed/sanitized for agent {proposer_agent.agent_id}. Using: '{content_to_parse[:100]}...' to '{content_to_parse[-100:]}'")
-
         tags_content = {}
-        current_parse_offset = 0 
+        # Use the raw output directly for extremely lenient parsing, ignore complex pre-cleaning/slicing.
+        search_text = llm_raw_output_text 
+        current_search_position = 0 # Tracks our position in search_text
         parsing_successful = True
 
-        for tag_name in expected_tag_sequence:
-            # Regex to find <tag_name>content</tag_name>:
-            # - Allows optional leading whitespace.
-            # - Allows an optional single "junk" character (not whitespace, word character, or '<'). This handles stray punctuation like periods.
-            # - Allows optional whitespace after the junk char and before the tag.
-            # - Matches the tag itself and its content non-greedily.
-            # - Tags are case-sensitive. Content can span multiple lines (re.DOTALL).
-            pattern_str = rf"\s*[^\s\w<]?\s*<{tag_name}>(.*?)</{tag_name}>"
-            pattern = re.compile(pattern_str, re.DOTALL)
-            match = pattern.search(content_to_parse, pos=current_parse_offset)
+        for i, tag_name_to_find in enumerate(expected_tag_sequence):
+            # 1. Find the opening marker for the current tag.
+            #    This is the tag name itself, treated as a whole word (case-insensitive).
+            #    We allow optional non-alphanumeric characters (like '<', '>', '.') before/after it.
+            #    The regex finds `junk + tag_name + junk_until_content_starts`.
+            #    Pattern: (junk symbols)? TAG_NAME (junk symbols like >)? CAPTURE_GROUP_FOR_JUNK_AND_TAG
+            #    We want to find the end of this entire opening marker pattern.
+            open_marker_regex_str = r"\b" + re.escape(tag_name_to_find) + r"\b" # \b for whole word
+            # Search for this tag name, possibly preceded by < or . and followed by >
+            # More lenient: look for the tag name, then account for a possible ">" or other chars before content.
+            # Example: "<context>", "context>", ".context>" should all find "context" and advance past ">"
             
-            if match:
-                tags_content[tag_name] = match.group(1).strip()
-                current_parse_offset = match.end() # Next search starts after this entire matched tag
-            else:
-                logging.warning(
-                    f"Required tag <{tag_name}> not found in sequence in pre-processed LLM output "
-                    f"(Agent: {proposer_agent.agent_id}). Search started at offset {current_parse_offset}. "
-                    f"Relevant content snippet: '{content_to_parse[current_parse_offset : current_parse_offset+150]}...'"
-                )
+            # Find the tag name itself.
+            open_tag_name_match = re.search(
+                open_marker_regex_str, 
+                search_text, 
+                re.IGNORECASE, 
+                pos=current_search_position
+            )
+
+            if not open_tag_name_match:
+                logging.warning(f"Scenario parsing: Start of tag '{tag_name_to_find}' not found. Agent: {proposer_agent.agent_id}. Search text from pos {current_search_position}: '{search_text[current_search_position:current_search_position+200]}...'")
                 parsing_successful = False
                 break
-        
-        if not parsing_successful:
-            logging.debug(f"Pre-processed content at time of parsing failure (Agent {proposer_agent.agent_id}):\n{content_to_parse}")
-            return None, final_prompt_text
-        
-        # Check for significant text after all expected tags have been parsed from the isolated block.
-        remaining_text_after_tags = content_to_parse[current_parse_offset:].strip()
-        if remaining_text_after_tags:
-            logging.warning(
-                f"Extraneous content found within the isolated tag block after all expected tags were parsed (Agent: {proposer_agent.agent_id}). "
-                f"Remaining: '{remaining_text_after_tags[:200]}...'. This might violate 'ONLY these tags' rule."
+            
+            # Content starts after the matched tag name and any immediately following non-content characters (like '>')
+            # Advance past the tag name itself.
+            content_start_index = open_tag_name_match.end()
+            optional_gt_match = re.match(r"\s*(?:>)?", search_text[content_start_index:])
+            if optional_gt_match:
+                content_start_index += optional_gt_match.end()
+
+            # 2. Determine the end of the content for tag_name_to_find.
+            content_end_index = len(search_text) # Default to end of string if no other delimiter found
+            found_explicit_closer = False
+
+            # Option A: Look for the specific closing tag "/tag_name_to_find"
+            # Example: "</context>", "/context>", "/context"
+            close_marker_regex_str = r"(?:<)?\s*/\s*\b" + re.escape(tag_name_to_find) + r"\b"
+            close_tag_match = re.search(
+                close_marker_regex_str,
+                search_text,
+                re.IGNORECASE,
+                pos=content_start_index # Search after the opening tag's content starts
             )
-            # For maximum leniency on trailing junk within the identified block, we don't fail here.
+            if close_tag_match:
+                content_end_index = close_tag_match.start() # Content ends before the closing marker starts
+                # Advance current_search_position past this closing tag for the next iteration
+                # Find the full extent of the closing marker (e.g. including a '>')
+                full_closing_marker_match = re.search(
+                    close_marker_regex_str + r"\s*(?:>)?", # Add optional '>'
+                    search_text,
+                    re.IGNORECASE,
+                    pos=close_tag_match.start() # Start search from where the basic closer was found
+                )
+                current_search_position = full_closing_marker_match.end() if full_closing_marker_match else close_tag_match.end()
+                found_explicit_closer = True
+            
+            # Option B: If not the last tag, look for the start of the *next* tag in sequence.
+            # The content ends before the next tag's opening marker if that comes first.
+            if i + 1 < len(expected_tag_sequence):
+                next_tag_name = expected_tag_sequence[i+1]
+                next_tag_open_marker_regex_str = r"\b" + re.escape(next_tag_name) + r"\b"
+                
+                next_tag_open_name_match = re.search(
+                    next_tag_open_marker_regex_str,
+                    search_text,
+                    re.IGNORECASE,
+                    pos=content_start_index # Search after current tag's content starts
+                )
+                
+                if next_tag_open_name_match:
+                    # If next tag starts before the current tag's explicit closer (or if closer wasn't found)
+                    if not found_explicit_closer or next_tag_open_name_match.start() < content_end_index:
+                        content_end_index = next_tag_open_name_match.start()
+                        # For the next iteration, start searching from where this next tag was found
+                        current_search_position = next_tag_open_name_match.start() 
+            
+            # Extract content
+            extracted_content = search_text[content_start_index:content_end_index].strip()
+            tags_content[tag_name_to_find] = extracted_content
+            logging.debug(f"Scenario parsing: Tag '{tag_name_to_find}' -> '{extracted_content[:100]}...'. Next search pos: {current_search_position}")
+
+            if not found_explicit_closer and (i + 1 >= len(expected_tag_sequence)): 
+                # If it was the last tag and no explicit closer, we took till end of string.
+                # No more text to parse.
+                break 
+            
+            if current_search_position >= len(search_text) and i + 1 < len(expected_tag_sequence):
+                # Ran out of text before finding all tags
+                logging.warning(f"Scenario parsing: Ran out of text after parsing '{tag_name_to_find}', but more tags expected. Agent: {proposer_agent.agent_id}.")
+                parsing_successful = False # Mark as failure if not all tags found
+                break
+
+
+        # Final check: ensure all expected tags were found
+        if len(tags_content) != len(expected_tag_sequence):
+            logging.warning(f"Scenario parsing: Failed to extract all {len(expected_tag_sequence)} expected tags. Found {len(tags_content)}: {list(tags_content.keys())}. Agent: {proposer_agent.agent_id}. Raw text: '{llm_raw_output_text[:500]}...'")
+            parsing_successful = False
+
+        if not parsing_successful:
+            return None, final_prompt_text
+
 
         # Validate content constraints
         if "objective" not in tags_content.get("objectives", "").lower():
