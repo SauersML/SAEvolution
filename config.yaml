@@ -123,11 +123,15 @@ adjudicator:
       3. If there is a winner and loser (i.e., not a 'Tie'):
          <win_message_id>[WINNER_MSG_ID]</win_message_id>
          <lose_message_id>[LOSER_MSG_ID]</lose_message_id>
+         
+         Replace [WINNER_MSG_ID] with the message identifier of the winner's most critical message leading to or responsible for the win.
+         Replace [LOSER_MSG_ID] with the message identifier of the loser's message which most contributed to the loss.
 
          There must be only one message ID inside each of the two tags.
 
-         Replace [WINNER_MSG_ID] with the message identifier of the winner's most critical message leading to or responsible for the win.
-         Replace [LOSER_MSG_ID] with the message identifier of the loser's message which most contributed to the loss.
+         Outcome MUST be ONLY ONE of these options, verbatim: 1. <outcome>Role A Wins</outcome>, 2. <outcome>Role B Wins</outcome>, or 3. <outcome>Tie</outcome>
+         You must refer to the roles as "Role A" and "Role B" and not as any other names.
+        
          If the outcome is 'Tie', you can omit these tags.
 
       Scenario Description:
