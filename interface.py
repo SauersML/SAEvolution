@@ -197,7 +197,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     if isinstance(raw_genome_from_proposer, dict):
         for feature_uuid, feature_data_dict in raw_genome_from_proposer.items():
             if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
-                # New genome format: {'activation': float, 'label': str}
+                # genome format: {'activation': float, 'label': str}
                 genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
             elif isinstance(feature_data_dict, (int, float)):
                 # This case might occur if loading very old data or if there's mixed format.
@@ -349,7 +349,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
                 break
 
 
-        # Final check: ensure all expected tags were found
+        # Final check: all expected tags were found
         if len(tags_content) != len(expected_tag_sequence):
             logging.warning(f"Scenario parsing: Failed to extract all {len(expected_tag_sequence)} expected tags. Found {len(tags_content)}: {list(tags_content.keys())}. Agent: {proposer_agent.agent_id}. Raw text: '{llm_raw_output_text[:500]}...'")
             parsing_successful = False
@@ -459,7 +459,7 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
     if isinstance(raw_genome_from_agent, dict):
         for feature_uuid, feature_data_dict in raw_genome_from_agent.items():
             if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
-                # New genome format: {'activation': float, 'label': str}
+                # genome format: {'activation': float, 'label': str}
                 genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
             elif isinstance(feature_data_dict, (int, float)):
                 # Fallback for potential old genome format: float activation value
@@ -510,121 +510,17 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         logging.critical(f"Unexpected critical error generating response for agent {agent.agent_id}: {e}", exc_info=True)
         return None, prompt_text_for_llm
 
-def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict) -> tuple[str, str | None]:
-    """
-    Adjudicates the game interaction.
-    Returns:
-        A tuple: (str: adjudication outcome e.g., 'Role A Wins', 'Tie', 'error' (though 'error' becomes 'Tie' here in most cases),
-                  str: The prompt_text used for adjudication or None on early failure)
-    """
-
-    if not all(isinstance(arg, exp_type) for arg, exp_type in [
-        (scenario_data, dict), (transcript, list), (config, dict)
-    ]):
-        logging.error(f"adjudicate_interaction: Invalid argument types. Scenario: {type(scenario_data)}, Transcript: {type(transcript)}, Config: {type(config)}")
-        return "Tie", None # Default to Tie on bad input types, log error
-
-    client = get_goodfire_client(config)
-    adjudicator_config = config.get('adjudicator', {})
-    model_id = adjudicator_config.get('model_id')
-    
-    prompt_template_str = adjudicator_config.get('prompt_template')
-    if prompt_template_str is None:
-        err_msg = "Configuration error: 'adjudicator.prompt_template' is missing from config.yaml."
-        logging.critical(err_msg)
-        # Default to "Tie" as per existing logic, and None for prompt_text as no valid prompt was formed.
-        return "Tie", None
-
-    max_tokens = adjudicator_config.get('max_tokens', 20)
-    temperature = adjudicator_config.get('temperature', 0.7)
-    api_retry_config = config.get('api_retries', {})
-
-    if not model_id:
-        logging.error("Adjudicator model ID not specified in configuration. Cannot adjudicate. Defaulting to Tie.")
-        return "Tie", None # No specific prompt to return as model_id itself is missing.
-
-    scenario_text = scenario_data.get('scenario_text', '[Scenario text missing from input scenario_data]')
-    transcript_text = "\n".join([f"{msg.get('role', 'UnknownRole')}: {msg.get('content', '[empty_content]')}" for msg in transcript]) \
-                      if transcript else "[No transcript available for adjudication]"
-
-    adjudication_prompt_text = None # This will hold the fully formatted prompt sent to LLM.
-    try:
-        # Use the validated prompt_template_str from config.
-        adjudication_prompt_text = prompt_template_str.format(scenario=scenario_text, transcript=transcript_text)
-    except KeyError as ke:
-        logging.error(f"Missing key '{ke}' in prompt_template (from config) for adjudication. Template: '{prompt_template_str}'. Defaulting to Tie.")
-        # Return "Tie" and the problematic template string for debugging.
-        return "Tie", prompt_template_str
-
-    messages = [{"role": "user", "content": adjudication_prompt_text}]
-    raw_adjudicator_llm_output = "[Adjudicator LLM output not captured before potential error]"
-
-    try:
-        logging.debug(f"Attempting adjudication. Prompt: {adjudication_prompt_text[:500]}...")
-        response = _execute_api_call(
-            client.chat.completions.create,
-            messages=messages,
-            model=model_id, # Adjudicator uses a base model_id, not a variant
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
-            stream=False,
-            retry_config=api_retry_config
-        )
-
-        if not response or not response.choices or not isinstance(response.choices[0].message, dict):
-             logging.error("Invalid or empty response structure received from adjudicator API. Defaulting to Tie.")
-             return "Tie", adjudication_prompt_text
-
-        raw_adjudicator_llm_output = response.choices[0].message.get('content', '')
-        cleaned_output = raw_adjudicator_llm_output.strip()
-
-        if not cleaned_output:
-            logging.error(f"Adjudicator returned empty or whitespace-only output. Raw: '{raw_adjudicator_llm_output}'. Defaulting to Tie.")
-            return "Tie", adjudication_prompt_text
-
-        output_lower = cleaned_output.lower()
-
-        # Define keywords for each outcome (case-insensitive)
-        # Using lists of keywords for flexibility (e.g., "role a wins", "a wins")
-        keywords_a_wins = ["role a wins", "a wins", "player a wins"]
-        keywords_b_wins = ["role b wins", "b wins", "player b wins"]
-        keywords_tie = ["tie", "draw", "stalemate"]
-
-        # Check presence of keywords
-        contains_a_wins = any(kw in output_lower for kw in keywords_a_wins)
-        contains_b_wins = any(kw in output_lower for kw in keywords_b_wins)
-        contains_tie = any(kw in output_lower for kw in keywords_tie)
-
-        # Exclusive "contains one and not the others" logic
-        if contains_a_wins and not contains_b_wins and not contains_tie:
-            logging.info(f"Adjudication determined: 'Role A Wins'. Raw: '{raw_adjudicator_llm_output}'")
-            return 'Role A Wins', adjudication_prompt_text
-        elif contains_b_wins and not contains_a_wins and not contains_tie:
-            logging.info(f"Adjudication determined: 'Role B Wins'. Raw: '{raw_adjudicator_llm_output}'")
-            return 'Role B Wins', adjudication_prompt_text
-        elif contains_tie and not contains_a_wins and not contains_b_wins:
-            logging.info(f"Adjudication determined: 'Tie'. Raw: '{raw_adjudicator_llm_output}'")
-            return 'Tie', adjudication_prompt_text
-        else:
-            # This case covers:
-            # 1. Contains none of the keywords.
-            # 2. Contains conflicting keywords (e.g., "a wins" and "tie").
-            logging.warning(
-                f"Adjudicator response is ambiguous or does not clearly indicate a single outcome. "
-                f"Output: '{cleaned_output}' (Raw: '{raw_adjudicator_llm_output}'). "
-                f"Detected flags: A_wins={contains_a_wins}, B_wins={contains_b_wins}, Tie={contains_tie}. Defaulting to Tie."
+            # 3. Adjudication
+            logging.debug(f"Game {game_id}: Requesting adjudication.")
+            adjudication_final_text, adjudication_llm_prompt = adjudicate_interaction(
+                scenario_info, current_transcript, config
             )
-            return "Tie", adjudication_prompt_text
+            game_details_dict["adjudication_result"] = adjudication_final_text
+            game_details_dict["adjudication_prompt"] = adjudication_llm_prompt
+            
 
-    except TimeoutError:
-         logging.error(f"Timeout during adjudication after all retries. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'")
-         return "Tie", adjudication_prompt_text
-    except goodfire_exceptions.GoodfireBaseException as e: # Catching the base Goodfire exception
-        logging.error(f"Goodfire API error during adjudication: {e}. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'", exc_info=True)
-        return "Tie", adjudication_prompt_text
-    except Exception as e:
-        logging.critical(f"Unexpected critical error during adjudication: {e}. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'", exc_info=True)
-        return "Tie", adjudication_prompt_text
+            if adjudication_final_text not in ['Role A Wins', 'Role B Wins', 'Tie', 'error']:
+                game_details_dict["adjudication_raw_llm_output"] = adjudication_final_text
 
 def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant_or_model_id, top_k: int, config: dict) -> tuple[list | None, list | None]:
     """
