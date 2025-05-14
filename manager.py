@@ -550,36 +550,46 @@ def evolve_population(
                     )
 
                     top_feature_activations = context_inspector.top(k=inspect_top_k_val)
-                    # The FeatureActivation object has 'feature' and 'activation' attributes.
-                    # The 'feature' attribute is a goodfire.Feature object.
                     
-                    logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector internal _feature_strengths (first 5): {dict(list(context_inspector._feature_strengths.items())[:5])}")
-                    logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector internal _feature_ids (count): {len(context_inspector._feature_ids)}")
-                    # _features is populated by fetch_features(), called by synchronous inspect() before top()
-                    logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector internal _features (populated by fetch_features, count): {len(context_inspector._features)}")
+                    logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector internal _feature_strengths (first 5 of {len(context_inspector._feature_strengths)}): {dict(list(context_inspector._feature_strengths.items())[:5])}")
+                    logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector internal _feature_ids (count): {len(context_inspector._feature_ids)}")
+                    logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector internal _features (populated by fetch_features, count): {len(context_inspector._features)}")
                     if context_inspector._features:
-                        logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector _features sample keys (first 5): {list(context_inspector._features.keys())[:5]}")
+                        logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector _features sample keys (first 5 of {len(context_inspector._features)}): {list(context_inspector._features.keys())[:5]}")
+                    else:
+                        logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector _features is empty or None.")
                     
-                    # Log details of what top_feature_activations contains
-                    if top_feature_activations:
-                        logging.debug(f"Parent {parent_agent.agent_id} - top_feature_activations object (type: {type(top_feature_activations)}): {top_feature_activations}")
+                    num_top_feature_activations_objects = len(top_feature_activations) if top_feature_activations else 0
+                    logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - `top_feature_activations` (from context_inspector.top({inspect_top_k_val})) count: {num_top_feature_activations_objects}")
+
+                    if top_feature_activations: # Check if the list itself is not None and not empty
+                        logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Content of `top_feature_activations` (type: {type(top_feature_activations)}):")
                         for i, fa_item in enumerate(top_feature_activations):
-                            if hasattr(fa_item, 'feature') and fa_item.feature:
-                                logging.debug(f"  Item {i}: Feature UUID: {fa_item.feature.uuid}, Label: {fa_item.feature.label}, Index: {fa_item.feature.index_in_sae}, Activation: {fa_item.activation}")
+                            if hasattr(fa_item, 'feature') and fa_item.feature and hasattr(fa_item.feature, 'uuid'): # Check feature and its uuid
+                                logging.debug(f"  Item {i}: Feature UUID: {fa_item.feature.uuid}, Label: {getattr(fa_item.feature, 'label', 'N/A')}, Index: {getattr(fa_item.feature, 'index_in_sae', 'N/A')}, Aggregated Activation: {fa_item.activation}")
                             elif hasattr(fa_item, 'activation'):
-                                logging.debug(f"  Item {i}: Has activation {fa_item.activation} but no valid .feature attribute or feature is None. FA Object: {fa_item}")
+                                logging.debug(f"  Item {i}: Has Aggregated Activation {fa_item.activation} but no valid .feature attribute (or feature.uuid is missing). FA Object: {fa_item}")
                             else:
-                                logging.debug(f"  Item {i}: Malformed FeatureActivation object: {fa_item}")
+                                logging.debug(f"  Item {i}: Malformed FeatureActivation object (lacks .feature or .activation): {fa_item}")
 
-                    activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature') and fa.feature is not None]
+                    # Extract usable features that have a valid 'feature' attribute which is a goodfire.Feature object
+                    activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature') and isinstance(fa.feature, goodfire.Feature)]
+                    
+                    # Summarize findings
+                    num_actually_usable_features = len(activated_features_in_game)
+                    logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): Attempted inspection. `context_inspector.top()` returned {num_top_feature_activations_objects} FeatureActivation objects. Extracted {num_actually_usable_features} usable `goodfire.Feature` objects.")
 
-                    logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): Inspected game, found {len(activated_features_in_game)} top active features from {len(top_feature_activations)} FeatureActivation objects.")
-                        logging.info(f"Parent {parent_agent.agent_id} - First few activated features from inspect (UUIDs): {[str(f.uuid) for f in activated_features_in_game[:3] if f and hasattr(f, 'uuid')]}")
-                        logging.debug(f"Parent {parent_agent.agent_id} - Full top_feature_activations object from inspect: {top_feature_activations}")
-                    elif top_feature_activations: # Some FeatureActivation objects returned, but no actual features in them
-                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): client.features.inspect().top() returned {len(top_feature_activations)} FeatureActivation objects, but none contained valid .feature attributes.")
-                    else: # top_feature_activations itself was empty or None
-                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): client.features.inspect().top() returned no FeatureActivation objects.")
+                    if num_actually_usable_features > 0:
+                        feature_log_display_limit = 3
+                        logging.info(f"Parent {parent_agent.agent_id} - First {min(num_actually_usable_features, feature_log_display_limit)} usable features (UUID and Label):")
+                        for i, feat in enumerate(activated_features_in_game[:feature_log_display_limit]):
+                            logging.info(f"    Feature {i}: UUID={feat.uuid}, Label='{feat.label}', Index={feat.index_in_sae}")
+                        if num_actually_usable_features > feature_log_display_limit:
+                            logging.info(f"    ... and {num_actually_usable_features - feature_log_display_limit} more usable features.")
+                    elif num_top_feature_activations_objects > 0: # top_feature_activations had items, but none were usable features
+                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): `context_inspector.top()` returned {num_top_feature_activations_objects} items, but none were convertible to usable `goodfire.Feature` objects for evolution.")
+                    else: # top_feature_activations was empty or None
+                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): `context_inspector.top()` returned no FeatureActivation objects. No features identified for evolution from this game.")
 
 
                     if outcome == 'win':
