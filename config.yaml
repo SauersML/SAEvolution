@@ -100,17 +100,44 @@ adjudicator:
   model_id: 'meta-llama/Llama-3.3-70B-Instruct'
   prompt_template: |
       Analyze the interaction based on the rules and objectives defined in the scenario description.
+      The Interaction Transcript will label each message with an identifier like "A1" (Role A's first message), "B1" (Role B's first message), "A2", etc.
+
+      The contents of your reply should be contained within XML tags, so begin your response with the first XML opening tag ("<scratchpad>").
+
+      Your analysis should proceed in three steps, with XML tags for each:
+
+      1. <scratchpad>
+         Think step-by-step here about the game flow, key moments, and how each player's actions related to the win criteria and objectives.
+         Identify which role, achieved its objectives or better met the win criteria, even if the objectives were not achieved.
+         If a winner is clear, identify the single message from the WINNING role that was most pivotal or representative of their win.
+         Also, identify the single message from the LOSING role that was most pivotal or representative of their loss or a key mistake.
+         If it's a Tie, you do not need to identify win/loss messages. If there is any signal or lean as to who is doing better, you should assign a win instead of a tie.
+         Note: assign ties only when the scenario and game context is very evenly matched with no possible way to decide a winner. If one role is doing better, assign it to win.
+         You may also plan how to give the other responses using the XML tags as described.
+      </scratchpad>
+
+      2. <outcome>
+         Based on your analysis of the interaction, determine the outcome. Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.
+      </outcome>
+
+      3. If there is a winner and loser (i.e., not a 'Tie'):
+         <win_message_id>[WINNER_MSG_ID]</win_message_id>
+         <lose_message_id>[LOSER_MSG_ID]</lose_message_id>
+
+         There must be only one message ID inside each of the two tags.
+
+         Replace [WINNER_MSG_ID] with the message identifier of the winner's most critical message leading to or responsible for the win.
+         Replace [LOSER_MSG_ID] with the message identifier of the loser's message which most contributed to the loss.
+         If the outcome is 'Tie', you can omit these tags.
 
       Scenario Description:
       {scenario}
 
-      Interaction Transcript:
-      {transcript}
+      Interaction Transcript (with message identifiers):
+      {transcript_with_ids}
 
-      Note: assign ties only when the scenario and game context is very evenly matched with no possible way to decide a winner. If one role is doing better, assign it to win.
-
-      Task: Based ONLY on the scenario's win criteria and the interaction, determine the outcome. Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.
-  max_tokens: 1000
+      Provide your full response using the XML tags as described.
+  max_tokens: 5000
   temperature: 0.0
 
 logging:
