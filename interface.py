@@ -510,17 +510,16 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         logging.critical(f"Unexpected critical error generating response for agent {agent.agent_id}: {e}", exc_info=True)
         return None, prompt_text_for_llm
 
-            # 3. Adjudication
-            logging.debug(f"Game {game_id}: Requesting adjudication.")
-            adjudication_final_text, adjudication_llm_prompt = adjudicate_interaction(
-                scenario_info, current_transcript, config
-            )
-            game_details_dict["adjudication_result"] = adjudication_final_text
-            game_details_dict["adjudication_prompt"] = adjudication_llm_prompt
-            
+    # 3. Adjudication
+    logging.debug(f"Game {game_id}: Requesting adjudication.")
+    adjudication_final_text, adjudication_llm_prompt = adjudicate_interaction(
+        scenario_info, current_transcript, config
+    )
+    game_details_dict["adjudication_result"] = adjudication_final_text
+    game_details_dict["adjudication_prompt"] = adjudication_llm_prompt
 
-            if adjudication_final_text not in ['Role A Wins', 'Role B Wins', 'Tie', 'error']:
-                game_details_dict["adjudication_raw_llm_output"] = adjudication_final_text
+    if adjudication_final_text not in ['Role A Wins', 'Role B Wins', 'Tie', 'error']:
+        game_details_dict["adjudication_raw_llm_output"] = adjudication_final_text
 
 def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant_or_model_id, top_k: int, config: dict) -> tuple[list | None, list | None]:
     """
