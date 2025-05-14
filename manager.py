@@ -544,11 +544,6 @@ def evolve_population(
                     logging.debug(f"Inspecting game transcript for parent {parent_agent.agent_id} (outcome: {outcome}) using aggregate_by='{inspect_aggregate_by_val}'")
 
 
-
-
-
-
-                    # --- NEW LOGIC: IDENTIFY AND PREPARE SINGLE CRITICAL/FALLBACK MESSAGE FOR INSPECTION ---
                     message_content_for_inspect = None
                     # The role for the Goodfire API for the selected message will always be "assistant",
                     # as we are inspecting an utterance made by the parent (or an utterance critical to their outcome).
@@ -664,9 +659,6 @@ def evolve_population(
                                 logging.debug(f"  Item {i}: Malformed FeatureActivation object (lacks .feature or .activation): {fa_item}")
 
 
-
-
-                    
                     num_top_feature_activations_objects = len(top_feature_activations) if top_feature_activations else 0
                     logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - `top_feature_activations` (from context_inspector.top({inspect_top_k_val})) count: {num_top_feature_activations_objects}")
 
