@@ -173,12 +173,21 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     client = get_goodfire_client(config)
     gen_config = config.get('generation', {}).get('scenario', {})
     model_id = proposer_agent.model_id
-    prompt_text_template = gen_config.get('prompt', "Error: Scenario generation prompt template not found in config.")
+    
+    prompt_text_template = gen_config.get('prompt')
+    if prompt_text_template is None:
+        err_msg = "Configuration error: 'generation.scenario.prompt' is missing from config.yaml."
+        logging.critical(err_msg + f" (Agent: {proposer_agent.agent_id})")
+        # Return None for scenario_info and None for prompt_text, signaling failure.
+        return None, None
+
     max_tokens = gen_config.get('max_tokens', 1000)
     temperature = gen_config.get('temperature', 0.7)
     api_retry_config = config.get('api_retries', {})
 
     diversification_seed = f"agent_id:{proposer_agent.agent_id}_call_id:{uuid.uuid4().hex[:8]}"
+    # final_prompt_text will be used for the actual API call and returned if an API error occurs.
+    # It is constructed here using the validated prompt_text_template.
     final_prompt_text = f"{prompt_text_template}\n[{diversification_seed}]"
 
     variant = goodfire.Variant(model_id)
@@ -210,11 +219,15 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     # Define expected tags locally. XML tags are case-sensitive.
     expected_tag_sequence = ["context", "roles", "objectives", "win_criteria", "tie_criteria", "proposer_role"]
 
+    # The 'final_prompt_text' variable, used for the API call and error reporting, 
+    # is already defined earlier if prompt_text_template was successfully loaded.
+    # 'messages' is also defined earlier using this 'final_prompt_text'.
+
     try:
         logging.debug(f"Attempting scenario generation for agent {proposer_agent.agent_id} with prompt ending: ...{final_prompt_text[-100:]}")
         response = _execute_api_call(
             client.chat.completions.create,
-            messages=messages,
+            messages=messages, # messages was formed using the validated final_prompt_text
             model=variant,
             max_completion_tokens=max_tokens,
             temperature=temperature,
@@ -224,6 +237,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
 
         if not response or not response.choices or not isinstance(response.choices[0].message, dict):
              logging.error(f"Invalid or empty response structure received from API for scenario generation (Agent: {proposer_agent.agent_id}).")
+             # Return the prompt that was attempted, even if the response was bad.
              return None, final_prompt_text
 
         llm_raw_output_text = response.choices[0].message.get('content', '')
@@ -231,6 +245,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
 
         if not llm_raw_output_text.strip():
              logging.warning(f"Empty content received from API for scenario generation (Agent: {proposer_agent.agent_id}).")
+             # Return the prompt that was attempted.
              return None, final_prompt_text
 
         tags_content = {}
@@ -410,8 +425,13 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
     model_id = agent.model_id
     scenario_text = scenario_data.get('scenario_text', '[Scenario Text Missing from input scenario_data]')
 
-    prompt_template = gen_config.get('prompt_template',
-        "Scenario:\n{scenario}\n\nYour Role: {role}\n\nConversation History:\n{history}\n\n{role} (Respond according to your role and objective):")
+    prompt_template_str = gen_config.get('prompt_template')
+    if prompt_template_str is None:
+        err_msg = "Configuration error: 'generation.response.prompt_template' is missing from config.yaml."
+        logging.critical(err_msg + f" (Agent: {agent.agent_id}, Role: {current_role})")
+        # Return None for response_text and None for prompt_text, signaling failure.
+        return None, None
+
     max_tokens = gen_config.get('max_tokens', 150)
     temperature = gen_config.get('temperature', 0.6)
     api_retry_config = config.get('api_retries', {})
@@ -423,12 +443,14 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         history_lines.append(f"{role}: {content}")
     history_text = "\n".join(history_lines) if history_lines else "[No conversation history yet]"
 
-    prompt_text_for_llm = None
+    prompt_text_for_llm = None # This will hold the fully formatted prompt sent to LLM.
     try:
-        prompt_text_for_llm = prompt_template.format(scenario=scenario_text, role=current_role, history=history_text)
+        # Use the validated prompt_template_str from config.
+        prompt_text_for_llm = prompt_template_str.format(scenario=scenario_text, role=current_role, history=history_text)
     except KeyError as ke:
-        logging.error(f"Missing key '{ke}' in prompt_template for agent response. Template: '{prompt_template}' Data: scenario_text_present={bool(scenario_text)}, role_present={bool(current_role)}, history_present={bool(history_text)}")
-        return None, prompt_template # Return template itself if formatting fails
+        logging.error(f"Missing key '{ke}' in prompt_template (from config) for agent response. Template: '{prompt_template_str}' Data: scenario_text_present={bool(scenario_text)}, role_present={bool(current_role)}, history_present={bool(history_text)}")
+        # Return None for response_text, but return the problematic template string for debugging.
+        return None, prompt_template_str 
 
     variant = goodfire.Variant(model_id)
     raw_genome_from_agent = agent.genome
@@ -505,26 +527,34 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict) 
     client = get_goodfire_client(config)
     adjudicator_config = config.get('adjudicator', {})
     model_id = adjudicator_config.get('model_id')
-    prompt_template = adjudicator_config.get('prompt_template',
-        "Analyze the interaction based strictly on the rules and objectives defined in the scenario description.\n\nScenario Description:\n{scenario}\n\nInteraction Transcript:\n{transcript}\n\nTask: Based ONLY on the scenario's win criteria and the interaction, determine the outcome. Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.")
+    
+    prompt_template_str = adjudicator_config.get('prompt_template')
+    if prompt_template_str is None:
+        err_msg = "Configuration error: 'adjudicator.prompt_template' is missing from config.yaml."
+        logging.critical(err_msg)
+        # Default to "Tie" as per existing logic, and None for prompt_text as no valid prompt was formed.
+        return "Tie", None
+
     max_tokens = adjudicator_config.get('max_tokens', 20)
     temperature = adjudicator_config.get('temperature', 0.7)
     api_retry_config = config.get('api_retries', {})
 
     if not model_id:
         logging.error("Adjudicator model ID not specified in configuration. Cannot adjudicate. Defaulting to Tie.")
-        return "Tie", None
+        return "Tie", None # No specific prompt to return as model_id itself is missing.
 
     scenario_text = scenario_data.get('scenario_text', '[Scenario text missing from input scenario_data]')
     transcript_text = "\n".join([f"{msg.get('role', 'UnknownRole')}: {msg.get('content', '[empty_content]')}" for msg in transcript]) \
                       if transcript else "[No transcript available for adjudication]"
 
-    adjudication_prompt_text = None
+    adjudication_prompt_text = None # This will hold the fully formatted prompt sent to LLM.
     try:
-        adjudication_prompt_text = prompt_template.format(scenario=scenario_text, transcript=transcript_text)
+        # Use the validated prompt_template_str from config.
+        adjudication_prompt_text = prompt_template_str.format(scenario=scenario_text, transcript=transcript_text)
     except KeyError as ke:
-        logging.error(f"Missing key '{ke}' in prompt_template for adjudication. Template: '{prompt_template}'. Defaulting to Tie.")
-        return "Tie", prompt_template # Return template itself if formatting fails
+        logging.error(f"Missing key '{ke}' in prompt_template (from config) for adjudication. Template: '{prompt_template_str}'. Defaulting to Tie.")
+        # Return "Tie" and the problematic template string for debugging.
+        return "Tie", prompt_template_str
 
     messages = [{"role": "user", "content": adjudication_prompt_text}]
     raw_adjudicator_llm_output = "[Adjudicator LLM output not captured before potential error]"
