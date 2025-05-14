@@ -684,9 +684,10 @@ def _extract_xml_tag_content(tag_name: str, xml_text: str, default_value: str | 
         
     return default_value
 
-def adjudicate_interaction(scenario_info: dict, transcript_with_ids: str, config: dict) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None]:
+def adjudicate_interaction(scenario_info: dict, transcript_with_ids: str, config: dict) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None, str | None, str | None]:
     """
-    Adjudicates a game interaction using an LLM.
+    Adjudicates a game interaction using two LLM calls: one for scratchpad, one for outcome & message IDs.
+    The scratchpad content from the first call is used as input for the second call.
 
     Args:
         scenario_info: Dictionary containing scenario details, including 'scenario_text'.
@@ -694,13 +695,12 @@ def adjudicate_interaction(scenario_info: dict, transcript_with_ids: str, config
         config: The main simulation configuration dictionary.
 
     Returns:
-        A tuple: (parsed_outcome, win_message_id, lose_message_id, scratchpad,
-                  adjudication_prompt_sent, raw_llm_output)
+        A tuple: (final_parsed_outcome, win_message_id, lose_message_id, scratchpad_content,
+                  prompt_for_scratchpad, raw_output_scratchpad,
+                  prompt_for_outcome_ids, raw_output_outcome_ids)
     """
-    from manager import Agent
-
-    # Default return values for critical failure
-    default_failure_return = ("error", None, None, None, None, None)
+    # Default return values for critical failure, matching the new signature
+    default_failure_return = ("error", None, None, None, None, None, None, None)
 
     if not all(isinstance(arg, exp_type) for arg, exp_type in [
         (scenario_info, dict), (transcript_with_ids, str), (config, dict)
@@ -711,103 +711,196 @@ def adjudicate_interaction(scenario_info: dict, transcript_with_ids: str, config
     client = get_goodfire_client(config)
     adj_config = config.get('adjudicator', {})
     model_id = adj_config.get('model_id')
-    prompt_template_str = adj_config.get('prompt_template')
-
-    if not model_id:
-        logging.error("Adjudicator model_id missing in config.")
-        return default_failure_return
-    if not prompt_template_str:
-        logging.error("Adjudicator prompt_template missing in config.")
-        # Try to construct a basic prompt text if template is missing, for the purpose of returning it as adjudication_prompt_sent
-        prompt_text_for_llm = f"Scenario: {scenario_info.get('scenario_text', '[Scenario Missing]')}\nTranscript: {transcript_with_ids}"
-        return ("error", None, None, None, prompt_text_for_llm, "Error: Prompt template missing")
-
-
-    max_tokens = adj_config.get('max_tokens', 5000)
-    temperature = adj_config.get('temperature', 0.0)
     api_retry_config = config.get('api_retries', {})
-
     scenario_text_for_prompt = scenario_info.get('scenario_text', '[Scenario Text Missing from input scenario_data]')
 
-    try:
-        prompt_text_for_llm = prompt_template_str.format(
-            scenario=scenario_text_for_prompt,
-            transcript_with_ids=transcript_with_ids
-        )
-    except KeyError as ke:
-        logging.error(f"Missing key '{ke}' in adjudicator prompt_template. Template: '{prompt_template_str}'")
-        # Return the problematic template string as the prompt_sent for debugging.
-        return ("error", None, None, None, prompt_template_str, f"Error: Missing key {ke} in prompt template")
+    # --- Adjudication Call 1: Scratchpad ---
+    prompt_template_scratchpad = adj_config.get('prompt_template_scratchpad')
+    max_tokens_scratchpad = adj_config.get('max_tokens_scratchpad', 2500)
+    temp_scratchpad = adj_config.get('temperature_scratchpad', 0.0)
+    
+    scratchpad_content: str | None = None # This will store the *parsed* content of the <scratchpad> tag
+    prompt_for_scratchpad: str | None = None
+    raw_output_scratchpad: str | None = None # This will store the full raw XML output from the first call
 
-    messages = [{"role": "user", "content": prompt_text_for_llm}]
-    raw_llm_output = None # Initialize
-
-    try:
-        logging.debug(f"Attempting adjudication. Prompt: {prompt_text_for_llm[:500]}...")
-        response = _execute_api_call(
-            client.chat.completions.create,
-            messages=messages,
-            model=model_id, # Using the adjudicator's base model_id
-            max_completion_tokens=max_tokens,
-            temperature=temperature,
-            stream=False,
-            retry_config=api_retry_config
-        )
-
-        if not response or not response.choices or not isinstance(response.choices[0].message, dict):
-            logging.error("Invalid or empty response structure from API for adjudication.")
-            return ("error", None, None, None, prompt_text_for_llm, "Error: Invalid API response structure")
-
-        raw_llm_output = response.choices[0].message.get('content', '').strip()
-        logging.debug(f"Raw LLM output for adjudication:\n{raw_llm_output}")
-
-        if not raw_llm_output:
-            logging.warning("Empty content received from API for adjudication.")
-            return ("error", None, None, None, prompt_text_for_llm, "Error: Empty API response content")
-
-        # Parse the XML-like response
-        scratchpad = _extract_xml_tag_content("scratchpad", raw_llm_output)
-        parsed_outcome = _extract_xml_tag_content("outcome", raw_llm_output)
-        win_message_id = None
-        lose_message_id = None
-
-        if not parsed_outcome:
-            logging.warning(f"Could not parse <outcome> from adjudicator response. Raw: {raw_llm_output[:300]}")
-            parsed_outcome = "error" # Default to error if outcome cannot be parsed
-        elif parsed_outcome.lower() not in ["role a wins", "role b wins", "tie"]:
-            logging.warning(f"Unexpected <outcome> value: '{parsed_outcome}'. Treating as error.")
-            # parsed_outcome = "error"
-
-        # Only try to parse win/lose message_id if it's not a Tie and outcome seems valid
-        # The prompt specifies to omit these tags for a Tie.
-        if parsed_outcome and "tie" not in parsed_outcome.lower() and "error" not in parsed_outcome.lower():
-            win_message_id = _extract_xml_tag_content("win_message_id", raw_llm_output)
-            lose_message_id = _extract_xml_tag_content("lose_message_id", raw_llm_output)
-
-            if not win_message_id:
-                logging.debug(f"No <win_message_id> found or content empty for outcome '{parsed_outcome}'.")
-            if not lose_message_id:
-                logging.debug(f"No <lose_message_id> found or content empty for outcome '{parsed_outcome}'.")
+    if not model_id:
+        logging.error("Adjudicator model_id missing in config for scratchpad call.")
+        # Cannot proceed with either call if model_id is missing.
+        return default_failure_return
         
-        # Normalize parsed_outcome for consistent handling in engine.py
-        # (e.g., "Role A Wins" vs "role a wins")
-        if parsed_outcome:
-            if "role a wins" in parsed_outcome.lower(): parsed_outcome = "Role A Wins"
-            elif "role b wins" in parsed_outcome.lower(): parsed_outcome = "Role B Wins"
-            elif "tie" in parsed_outcome.lower(): parsed_outcome = "Tie"
-            # else, keep original if it's an error or unexpected string
+    if not prompt_template_scratchpad:
+        logging.error("Adjudicator prompt_template_scratchpad missing in config.")
+        prompt_for_scratchpad = f"Scenario: {scenario_text_for_prompt}\nTranscript: {transcript_with_ids}" # Basic prompt for return
+        # Allow to proceed to second call, but scratchpad_content will be None.
+    else:
+        try:
+            prompt_for_scratchpad = prompt_template_scratchpad.format(
+                scenario=scenario_text_for_prompt,
+                transcript_with_ids=transcript_with_ids
+            )
+            messages_scratchpad = [{"role": "user", "content": prompt_for_scratchpad}]
+            logging.debug(f"Attempting adjudication (scratchpad). Prompt: {prompt_for_scratchpad[:500]}...")
+            
+            response_scratchpad = _execute_api_call(
+                client.chat.completions.create,
+                messages=messages_scratchpad,
+                model=model_id,
+                max_completion_tokens=max_tokens_scratchpad,
+                temperature=temp_scratchpad,
+                stream=False,
+                retry_config=api_retry_config
+            )
 
-        logging.info(f"Adjudication result: Outcome='{parsed_outcome}', WinMsg='{win_message_id}', LoseMsg='{lose_message_id}'.")
-        return (parsed_outcome, win_message_id, lose_message_id, scratchpad,
-                prompt_text_for_llm, raw_llm_output)
+            if response_scratchpad and response_scratchpad.choices and isinstance(response_scratchpad.choices[0].message, dict):
+                raw_output_scratchpad = response_scratchpad.choices[0].message.get('content', '').strip()
+                if raw_output_scratchpad:
+                    # Extract only the content *inside* the <scratchpad>...</scratchpad> tags
+                    scratchpad_content = _extract_xml_tag_content("scratchpad", raw_output_scratchpad)
+                    if not scratchpad_content:
+                        logging.warning(f"Could not parse content within <scratchpad> tag from adjudicator's first response. Raw output: {raw_output_scratchpad[:300]}")
+                else:
+                    logging.warning("Empty content received from API for adjudication scratchpad.")
+            else:
+                logging.error("Invalid or empty response structure from API for adjudication scratchpad.")
+                # raw_output_scratchpad remains None
+        except TimeoutError:
+            logging.error("Timeout during adjudication (scratchpad) after all retries.")
+        except goodfire_exceptions.GoodfireBaseException as e:
+            logging.error(f"Goodfire API error during adjudication (scratchpad): {e}", exc_info=True)
+        except KeyError as ke: # Catch missing keys in prompt formatting
+            logging.error(f"Missing key '{ke}' in adjudicator prompt_template_scratchpad. Template: '{prompt_template_scratchpad}'")
+            # prompt_for_scratchpad would be the problematic template here if assigned before error
+        except Exception as e:
+            logging.critical(f"Unexpected critical error during adjudication (scratchpad): {e}", exc_info=True)
 
-    except TimeoutError:
-         logging.error("Timeout during adjudication after all retries.")
-         return ("error", None, None, None, prompt_text_for_llm, "Error: API Timeout")
-    except goodfire_exceptions.GoodfireBaseException as e:
-        logging.error(f"Goodfire API error during adjudication: {e}", exc_info=True)
-        return ("error", None, None, None, prompt_text_for_llm, f"Error: Goodfire API Error - {type(e).__name__}")
-    except Exception as e:
-        logging.critical(f"Unexpected critical error during adjudication: {e}", exc_info=True)
-        # Include raw_llm_output in the return if it was fetched, otherwise None
-        return ("error", None, None, None, prompt_text_for_llm, raw_llm_output if raw_llm_output else f"Error: Critical Exception - {type(e).__name__}")
+    # --- Adjudication Call 2: Outcome and Message IDs ---
+    prompt_template_outcome_ids = adj_config.get('prompt_template_outcome_ids')
+    max_tokens_outcome_ids = adj_config.get('max_tokens_outcome_ids', 500)
+    temp_outcome_ids = adj_config.get('temperature_outcome_ids', 0.0)
+
+    raw_outcome_tag_content: str | None = None # Parsed content of <outcome>
+    win_message_id: str | None = None
+    lose_message_id: str | None = None
+    final_parsed_outcome: str = "error" # Default to error for the game outcome
+    prompt_for_outcome_ids: str | None = None
+    raw_output_outcome_ids: str | None = None # Full raw XML output from the second call
+
+    if not model_id: # Already checked, but defensive for this block
+        logging.error("Adjudicator model_id missing in config for outcome_ids call.")
+        return ("error", None, None, scratchpad_content, prompt_for_scratchpad, raw_output_scratchpad, None, None)
+
+    if not prompt_template_outcome_ids:
+        logging.error("Adjudicator prompt_template_outcome_ids missing in config.")
+        # Construct a basic prompt string for returning, even if the call won't be made well
+        scratchpad_input_for_debug_prompt = scratchpad_content if scratchpad_content else "[Scratchpad Content Missing]"
+        prompt_for_outcome_ids = f"Scenario: {scenario_text_for_prompt}\nTranscript: {transcript_with_ids}\nScratchpad: {scratchpad_input_for_debug_prompt}"
+        # Fall through, final_parsed_outcome remains "error"
+    else:
+        try:
+            # scratchpad_content (parsed from first call) is a string for formatting.
+            # This is the content *inside* the <scratchpad> tags.
+            scratchpad_analysis_input = scratchpad_content if scratchpad_content else "[No scratchpad analysis provided or parsed from the first step]"
+            
+            prompt_for_outcome_ids = prompt_template_outcome_ids.format(
+                scenario=scenario_text_for_prompt,
+                transcript_with_ids=transcript_with_ids,
+                scratchpad_analysis=scratchpad_analysis_input # Feed parsed scratchpad content here
+            )
+            messages_outcome_ids = [{"role": "user", "content": prompt_for_outcome_ids}]
+            logging.debug(f"Attempting adjudication (outcome/IDs). Input scratchpad snippet: {scratchpad_analysis_input[:200]}... Prompt: {prompt_for_outcome_ids[:500]}...")
+
+            response_outcome_ids = _execute_api_call(
+                client.chat.completions.create,
+                messages=messages_outcome_ids,
+                model=model_id,
+                max_completion_tokens=max_tokens_outcome_ids,
+                temperature=temp_outcome_ids,
+                stream=False,
+                retry_config=api_retry_config
+            )
+
+            if response_outcome_ids and response_outcome_ids.choices and isinstance(response_outcome_ids.choices[0].message, dict):
+                raw_output_outcome_ids = response_outcome_ids.choices[0].message.get('content', '').strip()
+                logging.debug(f"Raw LLM output for adjudication (outcome/IDs):\n{raw_output_outcome_ids}")
+
+                if raw_output_outcome_ids:
+                    # Parse the <outcome> tag from the second response
+                    raw_outcome_tag_content = _extract_xml_tag_content("outcome", raw_output_outcome_ids)
+                    
+                    win_message_id_temp = _extract_xml_tag_content("win_message_id", raw_output_outcome_ids)
+                    lose_message_id_temp = _extract_xml_tag_content("lose_message_id", raw_output_outcome_ids)
+
+                    valid_msg_id_pattern = r"^[AB][1-3]$"
+                    is_win_msg_id_valid = bool(win_message_id_temp and re.match(valid_msg_id_pattern, win_message_id_temp))
+                    is_lose_msg_id_valid = bool(lose_message_id_temp and re.match(valid_msg_id_pattern, lose_message_id_temp))
+
+                    if not raw_outcome_tag_content:
+                        logging.warning(f"Could not parse <outcome> tag from adjudicator's second response. Raw: {raw_output_outcome_ids[:300]}")
+                        # final_parsed_outcome remains "error", but we might still get a win from message IDs below
+                    else:
+                        outcome_lower = raw_outcome_tag_content.lower()
+                        if "role a wins" in outcome_lower:
+                            final_parsed_outcome = "Role A Wins"
+                        elif "role b wins" in outcome_lower:
+                            final_parsed_outcome = "Role B Wins"
+                        elif "tie" in outcome_lower:
+                            final_parsed_outcome = "Tie"
+                        else: # Non-canonical outcome from <outcome> tag
+                            logging.warning(f"Non-canonical content in <outcome> tag: '{raw_outcome_tag_content}'. Will check message IDs.")
+                            # final_parsed_outcome remains "error" for now, to be potentially overridden by message IDs
+
+                    # Override outcome based on win_message_id if outcome is currently "error" or non-canonical,
+                    # AND a valid win_message_id is present.
+                    if final_parsed_outcome == "error" or \
+                       (raw_outcome_tag_content and final_parsed_outcome not in ["Role A Wins", "Role B Wins", "Tie"]):
+                        if is_win_msg_id_valid:
+                            if win_message_id_temp.startswith("A"):
+                                final_parsed_outcome = "Role A Wins"
+                                logging.info(f"Outcome set to 'Role A Wins' based on valid win_message_id: {win_message_id_temp} (original outcome tag was '{raw_outcome_tag_content}').")
+                            elif win_message_id_temp.startswith("B"):
+                                final_parsed_outcome = "Role B Wins"
+                                logging.info(f"Outcome set to 'Role B Wins' based on valid win_message_id: {win_message_id_temp} (original outcome tag was '{raw_outcome_tag_content}').")
+                            # If win_message_id is valid but doesn't start with A/B, it's an issue with pattern or logic
+                        else:
+                             logging.warning(f"Original outcome tag was '{raw_outcome_tag_content}' (or missing), and no valid win_message_id found to determine winner. Final outcome remains '{final_parsed_outcome}'.")
+                    
+                    # Assign win/lose message IDs if the final_parsed_outcome is a win/loss
+                    if final_parsed_outcome in ["Role A Wins", "Role B Wins"]:
+                        if is_win_msg_id_valid:
+                            win_message_id = win_message_id_temp
+                        else:
+                            logging.warning(f"Outcome is '{final_parsed_outcome}' but win_message_id ('{win_message_id_temp}') is missing or invalid. Setting to None.")
+                            win_message_id = None 
+                        
+                        if is_lose_msg_id_valid:
+                            lose_message_id = lose_message_id_temp
+                        else:
+                            logging.warning(f"Outcome is '{final_parsed_outcome}' but lose_message_id ('{lose_message_id_temp}') is missing or invalid. Setting to None.")
+                            lose_message_id = None
+                    else: # Tie or error
+                        win_message_id = None
+                        lose_message_id = None
+                else: # raw_output_outcome_ids was empty
+                    logging.warning("Empty content received from API for adjudication (outcome/IDs).")
+                    # final_parsed_outcome remains "error"
+            else: # Bad response structure from API
+                logging.error("Invalid or empty response structure from API for adjudication (outcome/IDs).")
+                # final_parsed_outcome remains "error", raw_output_outcome_ids might be None
+
+        except TimeoutError:
+             logging.error("Timeout during adjudication (outcome/IDs) after all retries.")
+             # final_parsed_outcome remains "error"
+        except goodfire_exceptions.GoodfireBaseException as e:
+            logging.error(f"Goodfire API error during adjudication (outcome/IDs): {e}", exc_info=True)
+            # final_parsed_outcome remains "error"
+        except KeyError as ke: # Catch missing keys in prompt formatting
+            logging.error(f"Missing key '{ke}' in adjudicator prompt_template_outcome_ids. Template: '{prompt_template_outcome_ids}'")
+            # prompt_for_outcome_ids might be the problematic template string if assigned before error
+        except Exception as e:
+            logging.critical(f"Unexpected critical error during adjudication (outcome/IDs): {e}", exc_info=True)
+            # final_parsed_outcome remains "error"
+
+    logging.info(f"Adjudication result: Outcome='{final_parsed_outcome}', WinMsg='{win_message_id}', LoseMsg='{lose_message_id}', Scratchpad content (parsed from 1st call) present: {bool(scratchpad_content)}.")
+    return (final_parsed_outcome, win_message_id, lose_message_id, scratchpad_content,
+            prompt_for_scratchpad, raw_output_scratchpad,
+            prompt_for_outcome_ids, raw_output_outcome_ids)
