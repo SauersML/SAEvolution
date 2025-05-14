@@ -185,7 +185,18 @@ def load_checkpoint(simulation_run_id_to_resume: str, state_base_dir: str) -> tu
         logging.error(f"Resume failed: Could not load state or config files: {e}")
         return None
 
-    random.setstate(tuple(state_data['rng_state'])) # RNG state is often a tuple
+    # The rng_state was saved as a list [version, state_list, gaussian_state],
+    # where state_list itself was originally a tuple but became a list during JSON serialization.
+    # We need to convert the outer list to a tuple, and also the inner state_list back to a tuple.
+    loaded_rng_state_as_list = state_data['rng_state']
+    if isinstance(loaded_rng_state_as_list, list) and len(loaded_rng_state_as_list) == 3 and isinstance(loaded_rng_state_as_list[1], list):
+        version = loaded_rng_state_as_list[0]
+        internal_mt_state_tuple = tuple(loaded_rng_state_as_list[1]) # Convert inner list to tuple
+        gaussian_state = loaded_rng_state_as_list[2]
+        rng_state_to_set = (version, internal_mt_state_tuple, gaussian_state)
+        random.setstate(rng_state_to_set)
+    else:
+        logging.error(f"Resume failed: RNG state from checkpoint is malformed. Expected list of 3 elements with 2nd element being a list. Got: {loaded_rng_state_as_list}")
     
     resumed_population = [Agent.from_dict(agent_data) for agent_data in state_data['population_state']]
     
