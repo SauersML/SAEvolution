@@ -552,11 +552,28 @@ def evolve_population(
                     top_feature_activations = context_inspector.top(k=inspect_top_k_val)
                     # The FeatureActivation object has 'feature' and 'activation' attributes.
                     # The 'feature' attribute is a goodfire.Feature object.
+                    
+                    logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector internal _feature_strengths (first 5): {dict(list(context_inspector._feature_strengths.items())[:5])}")
+                    logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector internal _feature_ids (count): {len(context_inspector._feature_ids)}")
+                    # _features is populated by fetch_features(), called by synchronous inspect() before top()
+                    logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector internal _features (populated by fetch_features, count): {len(context_inspector._features)}")
+                    if context_inspector._features:
+                        logging.debug(f"Parent {parent_agent.agent_id} - ContextInspector _features sample keys (first 5): {list(context_inspector._features.keys())[:5]}")
+                    
+                    # Log details of what top_feature_activations contains
+                    if top_feature_activations:
+                        logging.debug(f"Parent {parent_agent.agent_id} - top_feature_activations object (type: {type(top_feature_activations)}): {top_feature_activations}")
+                        for i, fa_item in enumerate(top_feature_activations):
+                            if hasattr(fa_item, 'feature') and fa_item.feature:
+                                logging.debug(f"  Item {i}: Feature UUID: {fa_item.feature.uuid}, Label: {fa_item.feature.label}, Index: {fa_item.feature.index_in_sae}, Activation: {fa_item.activation}")
+                            elif hasattr(fa_item, 'activation'):
+                                logging.debug(f"  Item {i}: Has activation {fa_item.activation} but no valid .feature attribute or feature is None. FA Object: {fa_item}")
+                            else:
+                                logging.debug(f"  Item {i}: Malformed FeatureActivation object: {fa_item}")
+
                     activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature') and fa.feature is not None]
 
-
                     logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): Inspected game, found {len(activated_features_in_game)} top active features from {len(top_feature_activations)} FeatureActivation objects.")
-                    if activated_features_in_game: 
                         logging.info(f"Parent {parent_agent.agent_id} - First few activated features from inspect (UUIDs): {[str(f.uuid) for f in activated_features_in_game[:3] if f and hasattr(f, 'uuid')]}")
                         logging.debug(f"Parent {parent_agent.agent_id} - Full top_feature_activations object from inspect: {top_feature_activations}")
                     elif top_feature_activations: # Some FeatureActivation objects returned, but no actual features in them
