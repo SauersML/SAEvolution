@@ -575,8 +575,16 @@ def evolve_population(
                 except Exception as e:
                     logging.error(f"Error during feature inspection for parent {parent_agent.agent_id}: {e}", exc_info=True)
             else:
-                log_msg_detail = "no transcript" if not transcript else f"outcome '{outcome}' not win/loss"
-                logging.info(f"Parent {parent_agent.agent_id} had {log_msg_detail}. Offspring inherits genome without inspection update.")
+                if not transcript_for_inspection:
+                    log_msg_detail = "no valid transcript found for inspection"
+                elif not isinstance(transcript_for_inspection, list):
+                    log_msg_detail = f"transcript_for_inspection was not a list (type: {type(transcript_for_inspection)})"
+                elif outcome not in ['win', 'loss']:
+                    log_msg_detail = f"outcome '{outcome}' was not 'win' or 'loss'"
+                else: # Should not be reached if the outer if condition was false for other reasons
+                    log_msg_detail = "unknown reason for skipping inspection despite transcript and outcome"
+                
+                logging.info(f"Parent {parent_agent.agent_id} (game: {parent_game_id}, outcome: {outcome}): Skipped feature inspection because {log_msg_detail}. Offspring inherits genome without inspection update.")
 
         if features_to_reinforce_objs or features_to_suppress_objs:
             offspring_genome = apply_algorithmic_genome_update(
