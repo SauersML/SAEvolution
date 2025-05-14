@@ -150,6 +150,12 @@ adjudicator:
 
       Your response will be in this format: <scratchpad> ... </scratchpad> <outcome> ... </outcome> <win_message_id> ... </win_message_id> <lose_message_id> ... </lose_message_id>
 
+      win_message_id and lose_message_id must each contain two characters only within the tags. This is because the messages IDs are only two characters.
+
+      1. scratchpad can have any content you want.
+      2. outcome is extremely strict in must have only ONE of the three possible options. Your job is to choose which of the three to pick. Do NOT give any rational or explanation here.
+      3. win_message_id and lose_message_id must be one of the following: A1, A2, A3, B1, B2, or B3. This is strict: do not describe the messages or give reasoning here.
+      
       Provide your full response using the XML tags as described. Start your response with the <scratchpad> tag now. Then, write the <outcome> tag. Finally, provide the two tags for the winning and losing message_id.
       
   max_tokens: 5000
