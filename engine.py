@@ -275,7 +275,6 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
             game_details_dict["transcript"] = current_transcript
             hist_entry_for_agent1['transcript_snippet'] = f"{len(current_transcript)} turns, first: {current_transcript[0]['content'][:30] if current_transcript else 'N/A'}..."
 
-
             # 3. Adjudication
             logging.debug(f"Game {game_id}: Preparing transcript with IDs for adjudication.")
             # Format transcript with message IDs (e.g., A1, B1, A2, B2)
@@ -308,21 +307,25 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
             labeled_transcript_str_for_adj = "\n".join(labeled_transcript_lines)
             logging.debug(f"Game {game_id}: Labeled transcript for adjudicator:\n{labeled_transcript_str_for_adj}")
 
-            logging.debug(f"Game {game_id}: Requesting adjudication with new multi-part output format.")
-            (parsed_outcome, win_msg_id, lose_msg_id, 
-             scratchpad, adj_prompt_sent, raw_adj_output) = adjudicate_interaction(
-                scenario_info, labeled_transcript_str_for_adj, config # Pass the string
+            logging.debug(f"Game {game_id}: Requesting adjudication (two calls: scratchpad, then outcome/IDs).")
+            # Call adjudicate_interaction which now returns 8 values
+            (final_parsed_outcome, win_msg_id, lose_msg_id, scratchpad_content,
+             prompt_for_scratchpad, raw_output_scratchpad,
+             prompt_for_outcome_ids, raw_output_outcome_ids) = adjudicate_interaction(
+                scenario_info, labeled_transcript_str_for_adj, config
             )
             
-            # Store all new adjudication details
-            game_details_dict["adjudication_result"] = parsed_outcome # This is 'Role A Wins', 'Role B Wins', or 'Tie'
+            # Store all new adjudication details from the two-stage process
+            game_details_dict["adjudication_result"] = final_parsed_outcome 
             game_details_dict["adjudication_win_message_id"] = win_msg_id
             game_details_dict["adjudication_lose_message_id"] = lose_msg_id
-            game_details_dict["adjudication_scratchpad"] = scratchpad
-            game_details_dict["adjudication_prompt"] = adj_prompt_sent # The prompt that included the labeled transcript
-            game_details_dict["adjudication_raw_llm_output"] = raw_adj_output # The full XML response
+            game_details_dict["adjudication_scratchpad"] = scratchpad_content # Parsed content of <scratchpad>
+            game_details_dict["adjudication_prompt_scratchpad"] = prompt_for_scratchpad
+            game_details_dict["adjudication_raw_llm_output_scratchpad"] = raw_output_scratchpad
+            game_details_dict["adjudication_prompt_outcome_ids"] = prompt_for_outcome_ids
+            game_details_dict["adjudication_raw_llm_output_outcome_ids"] = raw_output_outcome_ids
 
-            adjudication_final_text = parsed_outcome # Use this for winner/loser determination below
+            adjudication_final_text = final_parsed_outcome # Use this for winner/loser determination below
 
             if adjudication_final_text == 'Role A Wins':
                 actual_winner_agent = agent1 if game_details_dict["player_A_game_role"] == 'Role A' else agent2
