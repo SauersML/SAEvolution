@@ -541,9 +541,35 @@ def evolve_population(
                         parent_variant.set(parent_genome_for_api_variant_set)
 
                     logging.debug(f"Inspecting game transcript for parent {parent_agent.agent_id} (outcome: {outcome}) using aggregate_by='{inspect_aggregate_by_val}'")
+                    logging.debug(f"Inspecting game transcript for parent {parent_agent.agent_id} (outcome: {outcome}) using aggregate_by='{inspect_aggregate_by_val}'")
+
+                    # The Goodfire API expects roles like "user", "assistant", or "system".
+                    # Our transcript uses "Role A", "Role B". We need to map them.
+                    # Let's map the parent_agent's turns to "assistant" and opponent's to "user".
+                    
+                    # Determine which game role ("Role A" or "Role B") the parent_agent had in this specific game.
+                    parent_actual_game_role = None
+                    if full_game_details_for_parent.get('player_A_id') == parent_agent.agent_id:
+                        parent_actual_game_role = full_game_details_for_parent.get('player_A_game_role')
+                    elif full_game_details_for_parent.get('player_B_id') == parent_agent.agent_id:
+                        parent_actual_game_role = full_game_details_for_parent.get('player_B_game_role')
+
+                    transformed_messages_for_inspect = []
+                    if parent_actual_game_role:
+                        for turn in transcript_for_inspection:
+                            original_role = turn.get('role')
+                            content = turn.get('content')
+                            if original_role == parent_actual_game_role:
+                                transformed_messages_for_inspect.append({\"role\": \"assistant\", \"content\": content})
+                            else: # Opponent's turn
+                                transformed_messages_for_inspect.append({\"role\": \"user\", \"content\": content})
+                        logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Transformed transcript for inspect. Parent was {parent_actual_game_role}. First new message: {transformed_messages_for_inspect[0] if transformed_messages_for_inspect else 'N/A'}")
+                    else:
+                        logging.warning(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Could not determine parent's specific role in the game from game details. Cannot transform transcript for inspect. Game Details: PlayerA ID: {full_game_details_for_parent.get('player_A_id')}, PlayerB ID: {full_game_details_for_parent.get('player_B_id')}")
+                        transformed_messages_for_inspect = transcript_for_inspection 
 
                     context_inspector = client.features.inspect(
-                        messages=transcript_for_inspection, # Use the full transcript
+                        messages=transformed_messages_for_inspect, # Use the transformed transcript
                         model=parent_variant,
                         features=None, # Inspect all features as per Goodfire default
                         aggregate_by=inspect_aggregate_by_val
