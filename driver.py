@@ -19,7 +19,7 @@ import shutil # For copying config
 from pathlib import Path
 from dotenv import load_dotenv
 from manager import Agent, initialize_population, calculate_fitness, evolve_population
-from engine import run_game_round # Assuming run_game_round will return (updated_population, game_details_list)
+from engine import run_game_round
 
 load_dotenv()
 
