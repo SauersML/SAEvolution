@@ -10,10 +10,27 @@ agent:
 
 evolution:
   learning_rate: 0.1
-  num_winning_features: 3 # Number of top features from winning games to reinforce.
-  num_losing_features: 3  # Number of top features from losing games to suppress.
-  inspect_top_k: 10       # Number of top activated features to retrieve from game inspection via client.features.inspect().top(k).
-  inspect_aggregate_by: "max" # Method to aggregate feature activations by inspect. Options: "frequency", "mean", "max", "sum".
+
+  # This identifies features activated by the model during that specific game.
+  # The following parameters control how features are selected from this inspection.
+  inspect_top_k: 10       # For client.features.inspect(...).top(k).
+                          # This retrieves the top 'k' features that were most salient during the game transcript
+                          # (based on frequency of strong activation and then sorted by aggregated_value)
+
+  inspect_aggregate_by: "max" # Method for client.features.inspect(...) to calculate the 'salience'
+                          # (the aggregated activation value associated with each feature by .top(k)).
+                          # Options:
+                          #   "max": Peak activation strength of the feature during the transcript.
+                          #   "sum": Sum of all activation strengths for the feature.
+                          #   "mean": Average activation strength when the feature was active.
+                          #   "frequency": Count of tokens where the feature was active (above a small threshold).
+
+  num_winning_features: 3 # Of the 'inspect_top_k' features identified from a WINNING game,
+                          # use this many (the ones with the highest aggregated activation) to REINFORCE in the offspring.
+  num_losing_features: 3  # Of the 'inspect_top_k' features identified from a LOSING game,
+                          # use this many (the ones with the highest aggregated activation) to SUPPRESS in the offspring.
+                          # Note: Ties result in no inspection-based genome update.
+
   activation_min: -5.0    # Minimum allowed activation value for a feature.
   activation_max: 5.0     # Maximum allowed activation value for a feature.
   target_positive: 1.0    # Target activation for features reinforced due to winning (if update_method is 'target').
