@@ -144,7 +144,9 @@ adjudicator:
 
       If the game is unfinished, do your best to judge anyway.
 
-      Provide your full response using the XML tags as described. Start your response with the <scratchpad> tag now.
+      Your response will be in this format: <scratchpad> ... </scratchpad> <outcome> ... </outcome> <win_message_id> ... </win_message_id> <lose_message_id> ... </lose_message_id>
+
+      Provide your full response using the XML tags as described. Start your response with the <scratchpad> tag now. Then, write the <outcome> tag. Finally, provide the two tags for the winning and losing message_id.
       
   max_tokens: 5000
   temperature: 0.0
