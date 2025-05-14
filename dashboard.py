@@ -187,6 +187,62 @@ def load_full_run_data(run_id: str, state_base_dir: str):
                     st.sidebar.warning(f"Agent {agent_id} (Gen {gen_num}) has parent {parent_id} not in progenitor_map. Treating as new lineage root for now.")
             # Agents in Gen 1 are already handled as progenitors.
 
+    # Add more interesting events based on aggregated data
+    # Thresholds for "interesting" event logging
+    LINEAGE_MEMBER_COUNT_THRESHOLDS = [5, 10, 25, 50, 100] 
+    FEATURE_AVG_ACTIVATION_THRESHOLD = 0.5
+    # Track if a threshold has been met to avoid duplicate event logging per threshold per lineage/feature
+    lineage_thresholds_met = defaultdict(lambda: defaultdict(bool)) # lineage_id -> threshold -> bool
+    feature_activation_thresholds_met = defaultdict(bool) # feature_uuid -> bool
+
+    # Iterate through generations again to identify threshold-based events
+    for gen_num in range(1, latest_generation_number + 1):
+        if gen_num not in all_generation_data:
+            continue
+        
+        current_gen_data = all_generation_data[gen_num]
+        current_gen_population = current_gen_data.get("population_state", [])
+        current_gen_timestamp = current_gen_data.get("timestamp_completed")
+
+        # Event: Lineage reached K members
+        lineage_counts_this_gen = Counter()
+        for agent_dict in current_gen_population:
+            progenitor_id = progenitor_map.get(agent_dict['agent_id'])
+            if progenitor_id:
+                lineage_counts_this_gen[progenitor_id] += 1
+        
+        for prog_id, count in lineage_counts_this_gen.items():
+            for threshold in LINEAGE_MEMBER_COUNT_THRESHOLDS:
+                if count >= threshold and not lineage_thresholds_met[prog_id][threshold]:
+                    interesting_events.append({
+                        "generation": gen_num,
+                        "timestamp": current_gen_timestamp,
+                        "type": "Lineage Milestone",
+                        "description": f"Lineage of {get_agent_display_name(prog_id)} reached {count} members (threshold: {threshold})."
+                    })
+                    lineage_thresholds_met[prog_id][threshold] = True # Mark as met for this lineage and threshold
+
+        # Event: Feature average activation exceeded threshold
+        feature_activations_this_gen = defaultdict(list)
+        for agent_dict in current_gen_population:
+            genome = agent_dict.get("genome", {})
+            for f_uuid, f_data in genome.items():
+                act_val = f_data.get('activation') if isinstance(f_data, dict) else f_data
+                feature_activations_this_gen[f_uuid].append(act_val)
+        
+        for f_uuid, activations in feature_activations_this_gen.items():
+            if activations:
+                avg_activation = np.mean(activations)
+                if abs(avg_activation) >= FEATURE_AVG_ACTIVATION_THRESHOLD and not feature_activation_thresholds_met[f_uuid]:
+                    feature_label = all_active_features.get(f_uuid, f"UUID {f_uuid[:8]}")
+                    interesting_events.append({
+                        "generation": gen_num,
+                        "timestamp": current_gen_timestamp,
+                        "type": "Feature Milestone",
+                        "description": f"Feature '{get_feature_display_name(f_uuid, feature_label)}' average activation reached {avg_activation:.3f} (threshold: {FEATURE_AVG_ACTIVATION_THRESHOLD})."
+                    })
+                    feature_activation_thresholds_met[f_uuid] = True # Mark as met for this feature
+
     # Sort interesting events by generation then timestamp
     interesting_events.sort(key=lambda x: (x["generation"], x.get("timestamp", "")))
 
@@ -598,14 +654,73 @@ with tab_container_map["👑 Lineage Explorer"]:
                 with st.expander(f"Gen {agent_on_path['generation_number']}: {get_agent_display_name(agent_on_path['agent_id'])} (Fitness: {agent_on_path.get('fitness_score', 'N/A'):.3f})", expanded=(i == len(path) -1)):
                     st.write(f"**Wealth:** {agent_on_path.get('wealth', 'N/A'):.2f}")
                     
-                    genome_data = agent_on_path.get("genome", {})
-                    if genome_data:
-                        genome_list_for_display = []
-                        for f_uuid, f_data in genome_data.items():
-                            act_val = f_data.get('activation') if isinstance(f_data, dict) else f_data
-                            label_val = f_data.get('label') if isinstance(f_data, dict) else "N/A"
-                            genome_list_for_display.append({"Feature": get_feature_display_name(f_uuid, label_val) , "Activation": act_val})
-                        st.dataframe(pd.DataFrame(genome_list_for_display).sort_values(by="Activation", key=abs, ascending=False), height=200)
+                    genome_data_current = agent_on_path.get("genome", {})
+                    parent_agent_on_path = path[i-1] if i > 0 else None
+                    genome_data_parent = parent_agent_on_path.get("genome", {}) if parent_agent_on_path else {}
+
+                    if genome_data_current:
+                        st.markdown("**Genome Changes from Parent:**")
+                        diff_data = []
+                        all_feature_uuids_in_comparison = set(genome_data_current.keys()) | set(genome_data_parent.keys())
+                        
+                        activation_change_threshold = 0.1 # Define a threshold for "significant change"
+
+                        for f_uuid in sorted(list(all_feature_uuids_in_comparison)):
+                            current_feature_info = genome_data_current.get(f_uuid)
+                            parent_feature_info = genome_data_parent.get(f_uuid)
+
+                            current_act = 0.0
+                            current_label = all_active_features.get(f_uuid, f"Feature {f_uuid[:8]}...") # Default label
+                            if current_feature_info:
+                                current_act = current_feature_info.get('activation') if isinstance(current_feature_info, dict) else current_feature_info
+                                if isinstance(current_feature_info, dict) and 'label' in current_feature_info:
+                                    current_label = current_feature_info['label']
+                            
+                            parent_act = 0.0
+                            if parent_feature_info:
+                                parent_act = parent_feature_info.get('activation') if isinstance(parent_feature_info, dict) else parent_feature_info
+
+                            status = ""
+                            delta = current_act - parent_act
+
+                            if f_uuid in genome_data_current and f_uuid not in genome_data_parent:
+                                status = "New"
+                            elif f_uuid not in genome_data_current and f_uuid in genome_data_parent:
+                                status = "Removed"
+                                # For removed features, display parent's activation as 'from', current is implicitly 0
+                                current_act = 0 # Explicitly for display consistency if needed for "To"
+                            elif abs(delta) >= activation_change_threshold:
+                                status = "Changed"
+                            elif current_act != 0 : # Present, but not significantly changed, and not zero
+                                status = "Maintained" 
+                            
+                            if status: # Only show features that are new, removed, changed, or actively maintained
+                                diff_data.append({
+                                    "Feature": get_feature_display_name(f_uuid, current_label),
+                                    "Status": status,
+                                    "Activation (Parent)": parent_act if parent_agent_on_path else "N/A (Progenitor)",
+                                    "Activation (Current)": current_act,
+                                    "Change": delta if status in ["Changed", "New"] else "N/A" # New features have delta from 0
+                                })
+                        
+                        if diff_data:
+                            df_diff = pd.DataFrame(diff_data)
+                            st.dataframe(df_diff, height=250, use_container_width=True,
+                                         column_config={
+                                             "Activation (Parent)": st.column_config.NumberColumn(format="%.3f"),
+                                             "Activation (Current)": st.column_config.NumberColumn(format="%.3f"),
+                                             "Change": st.column_config.NumberColumn(format="%+.3f")
+                                         })
+                        else:
+                            st.caption("No significant genome changes or no parent for comparison (progenitor). Full genome below:")
+                            # Fallback to showing full genome if no diff data or progenitor
+                            genome_list_for_display = []
+                            for f_uuid, f_data in genome_data_current.items():
+                                act_val = f_data.get('activation') if isinstance(f_data, dict) else f_data
+                                label_val = (f_data.get('label') if isinstance(f_data, dict) 
+                                             else all_active_features.get(f_uuid, f"Feature {f_uuid[:8]}..."))
+                                genome_list_for_display.append({"Feature": get_feature_display_name(f_uuid, label_val) , "Activation": act_val})
+                            st.dataframe(pd.DataFrame(genome_list_for_display).sort_values(by="Activation", key=abs, ascending=False), height=200)
 
                     # Display evolutionary inputs for this agent (if not Gen 1)
                     if agent_on_path['generation_number'] > 1:
@@ -746,6 +861,60 @@ with tab_container_map["🧬 Feature Explorer"]:
                      st.metric(label="Pearson Correlation (Activation vs. Fitness)", value=f"{pearson_r:.3f}")
             else:
                 st.caption(f"No agents with this feature found in Generation {gen_for_corr_feature} for correlation plot.")
+
+            # 3. Agent List by Feature (Table - for selected generation)
+            st.markdown("---")
+            st.subheader(f"Agents with Feature '{get_feature_display_name(selected_feature_uuid, feature_options.get(selected_feature_uuid))}' in a Selected Generation")
+            
+            # Slider for selecting generation for the agent list table
+            if latest_gen_num == 1:
+                gen_for_agent_list_feature = 1
+                st.markdown("Displaying agent list for Generation 1 (only generation available).")
+            else:
+                gen_for_agent_list_feature = st.slider(
+                    "Select Generation for Agent List", 
+                    1, 
+                    latest_gen_num, 
+                    latest_gen_num, # Default to latest gen
+                    key="feature_agent_list_gen_slider"
+                )
+
+            agents_with_feature_data = []
+            if gen_for_agent_list_feature in all_gen_data:
+                pop_state_agent_list = all_gen_data[gen_for_agent_list_feature].get("population_state", [])
+                fitness_map_agent_list = all_gen_data[gen_for_agent_list_feature].get("generation_summary_metrics", {}).get("fitness_scores_map", {})
+
+                for agent_data in pop_state_agent_list:
+                    genome = agent_data.get("genome", {})
+                    feature_info = genome.get(selected_feature_uuid)
+                    if feature_info: # Agent has the feature
+                        act_val = feature_info.get('activation') if isinstance(feature_info, dict) else feature_info
+                        fitness = agent_data.get("fitness_score", fitness_map_agent_list.get(agent_data['agent_id']))
+                        wealth = agent_data.get("wealth")
+                        
+                        agents_with_feature_data.append({
+                            "Agent ID": get_agent_display_name(agent_data['agent_id']),
+                            "Activation": act_val,
+                            "Fitness": fitness,
+                            "Wealth": wealth,
+                            "_raw_agent_id": agent_data['agent_id'] # For potential navigation
+                        })
+            
+            if agents_with_feature_data:
+                df_agents_with_feature = pd.DataFrame(agents_with_feature_data)
+                # Sort by activation value by default (absolute, descending)
+                df_agents_with_feature = df_agents_with_feature.sort_values(by="Activation", key=lambda x: abs(x), ascending=False)
+                st.dataframe(df_agents_with_feature[["Agent ID", "Activation", "Fitness", "Wealth"]], 
+                             use_container_width=True,
+                             column_config={
+                                 "Activation": st.column_config.NumberColumn(format="%.3f"),
+                                 "Fitness": st.column_config.NumberColumn(format="%.3f"),
+                                 "Wealth": st.column_config.NumberColumn(format="%.2f"),
+                             })
+                # Potential for adding navigation buttons per row if desired, using _raw_agent_id
+            else:
+                st.caption(f"No agents found with this feature in Generation {gen_for_agent_list_feature}.")
+
 
 # --- 🔬 Generation Detail Tab --- (Simplified, as Agent Detail and Lineage cover much)
 with tab_container_map["🔬 Generation Detail"]:
@@ -952,7 +1121,25 @@ with tab_container_map["👤 Agent Detail"]:
                         
                         col_gt, col_gc = st.columns([0.6, 0.4])
                         with col_gt:
-                            st.dataframe(df_genome[["Feature Label", "Activation", "UUID"]], height=300, use_container_width=True)
+                            # Display genome with clickable feature labels
+                            st.markdown("##### Genome Details (Click Feature Label to Explore)")
+                            for _, row in df_genome.iterrows():
+                                feature_uuid_for_nav = row["UUID"]
+                                feature_label_for_nav = row["Feature Label"]
+                                activation_val = row["Activation"]
+                                
+                                # Use columns for better layout of button and activation
+                                cols_genome_row = st.columns([0.7, 0.3])
+                                with cols_genome_row[0]:
+                                    if st.button(f"{feature_label_for_nav}", key=f"nav_genome_feature_{selected_agent_id}_{feature_uuid_for_nav}", help=f"Explore feature {feature_label_for_nav}"):
+                                        st.session_state.active_tab = "🧬 Feature Explorer"
+                                        st.session_state.nav_to_feature_uuid = feature_uuid_for_nav
+                                        st.rerun()
+                                with cols_genome_row[1]:
+                                    st.markdown(f"`{activation_val:.3f}`")
+                            st.caption("Sorted by absolute activation value.")
+
+
                         with col_gc:
                             # Chart top/bottom N by absolute activation
                             n_to_show_genome_chart = min(10, len(df_genome))
