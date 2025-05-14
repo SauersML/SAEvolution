@@ -134,9 +134,18 @@ adjudicator:
       {scenario}
 
       Interaction Transcript (with message identifiers):
+      [Beginning of game transcript]
       {transcript_with_ids}
+      [End of game transcript]
 
       Provide your full response using the XML tags as described.
+
+      Your task is to analyze the provided game transcript and scenario, not to continue the game.
+
+      If the game is unfinished, do your best to judge anyway.
+
+      Provide your full response using the XML tags as described. Start your response with the <scratchpad> tag now.
+      
   max_tokens: 5000
   temperature: 0.0
 
