@@ -9,7 +9,7 @@ agent:
   initial_genome: {} # Represents an empty genome; features and their activations are learned during evolution.
 
 evolution:
-  learning_rate: 0.05
+  learning_rate: 0.1
   num_winning_features: 3 # Number of top features from winning games to reinforce.
   num_losing_features: 3  # Number of top features from losing games to suppress.
   contrast_top_k: 10      # Number of features to request from contrastive analysis for each set (winning/losing).
@@ -37,6 +37,10 @@ generation:
     prompt: |
       Generate a two-player game scenario using the following XML-style tags. Your entire output must consist ONLY of these tags and their content, in sequence. Do not include any other text, explanations, or formatting outside of the tags themselves.
 
+      Later, you will be randomly assigned one of the roles. The game can be anything: any concept, style, description, rules, scenario, setting, constraints, etc.
+
+      The game will be purely text-based and multi-turn.
+      
       The required tags and their expected content are:
 
       1.  ` <context> ... </context> `
