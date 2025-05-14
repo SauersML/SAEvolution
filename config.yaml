@@ -25,9 +25,9 @@ evolution:
                           #   "mean": Average activation strength when the feature was active.
                           #   "frequency": Count of tokens where the feature was active (above a small threshold).
 
-  num_winning_features: 3 # Of the 'inspect_top_k' features identified from a WINNING game,
+  num_winning_features: 5 # Of the 'inspect_top_k' features identified from a WINNING game,
                           # use this many (the ones with the highest aggregated activation) to REINFORCE in the offspring.
-  num_losing_features: 3  # Of the 'inspect_top_k' features identified from a LOSING game,
+  num_losing_features: 5  # Of the 'inspect_top_k' features identified from a LOSING game,
                           # use this many (the ones with the highest aggregated activation) to SUPPRESS in the offspring.
                           # Note: Ties result in no inspection-based genome update.
 
@@ -62,19 +62,19 @@ generation:
       The required tags and their expected content are:
 
       1.  ` <context> ... </context> `
-          *   Content: Describe the game setting and relevant background information.
+          *   Content: Describe the game setting and relevant background information. Note, each role gets three messages each (six total).
 
       2.  ` <roles> ... </roles> `
           *   Content: Define the two player roles. For clarity within the content, you may structure this as "Role A: [description for Role A]" and "Role B: [description for Role B]".
 
       3.  ` <objectives> ... </objectives> `
-          *   Content: Detail what each player or role aims to achieve. The text content *within this tag* MUST include the word 'objective'.
+          *   Content: Detail what each player or role aims to achieve. The text content *within this tag* MUST include the word 'objective'. Explain other ways to determine the objective(s) to prevent a tie from occuring.
 
       4.  ` <win_criteria> ... </win_criteria> `
-          *   Content: Explain the conditions under which a player or role wins the game. The text content *within this tag* MUST include the phrase 'win criteria'.
+          *   Content: Explain the conditions under which a player or role wins the game. The text content *within this tag* MUST include the phrase 'win criteria'. Explain any softer win criteria to avoid a tie.
 
       5.  ` <tie_criteria> ... </tie_criteria> `
-          *   Content: Explain the conditions under which the game results in a tie. Ties should typically be reserved for exceptional circumstances. If ties are not possible, explicitly state that. The text content *within this tag* MUST include the phrase 'tie criteria'.
+          *   Content: Give reasoning for why a tie should be improbable. Explain the conditions under which the game results in a tie. Ties should typically be reserved for exceptional circumstances. If ties are not possible, explicitly state that. The text content *within this tag* MUST include the phrase 'tie criteria'.
 
       6.  ` <proposer_role> ... </proposer_role> `
           *   Content: Indicate which role is designated as the proposer or first mover for this game setup. The content of this tag MUST be exactly 'Role A' or 'Role B'.
