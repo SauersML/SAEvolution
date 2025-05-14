@@ -301,25 +301,58 @@ if 'nav_to_lineage_progenitor' not in st.session_state:
 st.sidebar.header("Simulation Controls")
 state_dir_input = st.sidebar.text_input("State Directory Path", value=DEFAULT_STATE_BASE_DIR, help="Path to the base directory where simulation states are saved.")
 
-available_runs = []
+# available_runs will now be a list of dictionaries: [{'id': str, 'timestamp': float}]
+available_runs_data = []
 if Path(state_dir_input).is_dir():
     for item in Path(state_dir_input).iterdir():
-        if item.is_dir() and (item / LATEST_GEN_TRACKER_FILENAME).exists():
-            available_runs.append(item.name)
-    available_runs = sorted(available_runs, reverse=True)
+        if item.is_dir():
+            tracker_file = item / LATEST_GEN_TRACKER_FILENAME
+            if tracker_file.exists():
+                try:
+                    # Get modification timestamp of the tracker file
+                    mod_timestamp = tracker_file.stat().st_mtime
+                    available_runs_data.append({'id': item.name, 'timestamp': mod_timestamp})
+                except Exception as e:
+                    st.sidebar.warning(f"Could not get timestamp for run {item.name}: {e}")
+    # Sort by timestamp, most recent first
+    available_runs_data = sorted(available_runs_data, key=lambda x: x['timestamp'], reverse=True)
 
-if not available_runs:
-    st.sidebar.warning("No simulation runs found in the specified directory.")
+# Extract just the IDs for the selectbox options, maintaining the sorted order
+available_run_ids = [run_info['id'] for run_info in available_runs_data]
+
+if not available_run_ids:
+    st.sidebar.warning("No valid simulation runs found in the specified directory.")
     st.stop()
 
-# Use session state for selected_run_id to make it sticky
-if st.session_state.selected_run_id not in available_runs: # If previous selection is no longer valid
-    st.session_state.selected_run_id = available_runs[0] if available_runs else None
+# Refined logic for handling session state for selected_run_id
+if 'selected_run_id' not in st.session_state or st.session_state.selected_run_id is None:
+    # If no run ID is in session state, or it's explicitly None, default to the latest available
+    st.session_state.selected_run_id = available_run_ids[0] if available_run_ids else None
+elif st.session_state.selected_run_id not in available_run_ids:
+    # If the run ID in session state is no longer in the list of available runs, default to the latest
+    st.sidebar.info(f"Previously selected run '{st.session_state.selected_run_id}' no longer found or invalid. Selecting the latest available run.")
+    st.session_state.selected_run_id = available_run_ids[0] if available_run_ids else None
+# Otherwise, st.session_state.selected_run_id is a valid, existing run, and we keep it.
+
+
+# Determine index for the selectbox
+selectbox_index = 0
+if st.session_state.selected_run_id and available_run_ids:
+    try:
+        selectbox_index = available_run_ids.index(st.session_state.selected_run_id)
+    except ValueError:
+        # This case means selected_run_id (from session) is not in the current available_run_ids list.
+        # The logic above should have reset it, but as a fallback:
+        st.sidebar.warning(f"Fallback: Run ID '{st.session_state.selected_run_id}' from session not in current list. Defaulting to latest.")
+        st.session_state.selected_run_id = available_run_ids[0] if available_run_ids else None
+        selectbox_index = 0 # selectbox_index remains 0 if selected_run_id becomes None here
+elif not available_run_ids: # Should have been caught by st.stop() but defensive
+    st.session_state.selected_run_id = None
 
 selected_run_id_from_ui = st.sidebar.selectbox(
     "Select Simulation Run ID",
-    options=available_runs,
-    index=available_runs.index(st.session_state.selected_run_id) if st.session_state.selected_run_id in available_runs else 0,
+    options=available_run_ids, # Use the list of IDs
+    index=selectbox_index,
     help="Choose a simulation run to inspect."
 )
 
