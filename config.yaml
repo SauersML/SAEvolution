@@ -1,32 +1,36 @@
 simulation:
-  num_generations: 10
-  population_size: 6
+  num_generations: 3
+  population_size: 3
+  games_per_agent_target: 1 # Explicitly set: number of games each agent aims to play per generation.
 
 agent:
   model_id: 'meta-llama/Llama-3.3-70B-Instruct'
   initial_wealth: 30.0
-  initial_genome: {}
+  initial_genome: {} # Represents an empty genome; features and their activations are learned during evolution.
 
 evolution:
   learning_rate: 0.05
-  num_winning_features: 3
-  num_losing_features: 3
-  contrast_top_k: 10
-  activation_min: -1.0
-  activation_max: 1.0
-  target_positive: 1.0
-  target_negative: -0.5
-  update_method: 'increment'
+  num_winning_features: 3 # Number of top features from winning games to reinforce.
+  num_losing_features: 3  # Number of top features from losing games to suppress.
+  contrast_top_k: 10      # Number of features to request from contrastive analysis for each set (winning/losing).
+  activation_min: -5.0    # Minimum allowed activation value for a feature.
+  activation_max: 5.0     # Maximum allowed activation value for a feature.
+  target_positive: 1.0    # Target activation for features reinforced due to winning (if update_method is 'target').
+  target_negative: -0.1   # Target activation for features suppressed due to losing (if update_method is 'target').
+  update_method: 'increment' # Method for updating feature activations. Options: 'increment', 'target'.
 
 game:
-  interaction_turns_per_agent: 3
+  interaction_turns_per_agent: 3 # Each agent takes this many turns in a game. Total game turns = 2 * this value.
   betting:
-    strategy: 'fixed'
-    fixed_amount: 5.0
-    min_bet: 1.0
-    max_bet_ratio: 0.5
-    max_loss_multiplier: 1.0
-    max_gain_ratio: 2.0
+    strategy: 'fixed'         # Betting strategy. Options: 'fixed' (others could be implemented).
+    fixed_amount: 5.0         # Bet amount if strategy is 'fixed'.
+    min_bet: 1.0              # Minimum allowed bet.
+    max_bet_ratio: 0.5        # Maximum bet as a ratio of an agent's current wealth (e.g., 0.5 means up to 50% of wealth).
+    max_loss_multiplier: 1.0  # Multiplier for the loser's bet to determine their maximum potential loss.
+    max_gain_ratio: 2.0       # Max gain for the winner as a ratio of their *own* pre-win wealth (e.g., 2.0 means winner can gain up to 1.0x their pre-win wealth from this game).
+
+round: # Configuration for how a round of games within a generation is structured.
+  pairing_strategy: 'random_shuffle' # Strategy for pairing agents for games. Options: 'random_shuffle'.
 
 generation:
   scenario:
@@ -35,22 +39,22 @@ generation:
 
       The required tags and their expected content are:
 
-      1.  `<context>...</context>`
+      1.  ` <context> ... </context> `
           *   Content: Describe the game setting and relevant background information.
 
-      2.  `<roles>...</roles>`
+      2.  ` <roles> ... </roles> `
           *   Content: Define the two player roles. For clarity within the content, you may structure this as "Role A: [description for Role A]" and "Role B: [description for Role B]".
 
-      3.  `<objectives>...</objectives>`
+      3.  ` <objectives> ... </objectives> `
           *   Content: Detail what each player or role aims to achieve. The text content *within this tag* MUST include the word 'objective'.
 
-      4.  `<win_criteria>...</win_criteria>`
+      4.  ` <win_criteria> ... </win_criteria> `
           *   Content: Explain the conditions under which a player or role wins the game. The text content *within this tag* MUST include the phrase 'win criteria'.
 
-      5.  `<tie_criteria>...</tie_criteria>`
+      5.  ` <tie_criteria> ... </tie_criteria> `
           *   Content: Explain the conditions under which the game results in a tie. If ties are not possible, explicitly state that. The text content *within this tag* MUST include the phrase 'tie criteria'.
 
-      6.  `<proposer_role>...</proposer_role>`
+      6.  ` <proposer_role> ... </proposer_role> `
           *   Content: Indicate which role is designated as the proposer or first mover for this game setup. The content of this tag MUST be exactly 'Role A' or 'Role B'.
 
       Make sure your output is only the sequence of these tags with their content.
@@ -86,18 +90,19 @@ adjudicator:
   temperature: 0.0
 
 logging:
-  log_level: DEBUG
-  log_directory: logs
+  log_level: DEBUG # Logging verbosity. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL.
+  log_directory: logs # Directory where log files will be saved.
 
 state_saving:
-  enabled: True
-  interval: 1
-  directory: simulation_state
+  enabled: True # Whether to save simulation state.
+  interval: 1   # Save state every N generations.
+  directory: simulation_state # Base directory for saving simulation run data.
 
 api_retries:
-  max_retries: 3
-  initial_delay: 1.0
-  backoff_factor: 2.0
+  max_retries: 3      # Maximum number of retries for failed API calls.
+  initial_delay: 1.0  # Initial delay in seconds before the first retry.
+  backoff_factor: 2.0 # Multiplier for increasing delay between retries (e.g., 1s, 2s, 4s, ...).
 
 goodfire:
-  api_key_env_var: 'GOODFIRE_API_KEY'
+  api_key_env_var: 'GOODFIRE_API_KEY' # Name of the environment variable holding the Goodfire API key.
+  base_url: null # Explicitly set to null to use the Goodfire SDK's default API URL.
