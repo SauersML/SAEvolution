@@ -271,8 +271,14 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
         parsing_successful = True
 
         for tag_name in expected_tag_sequence:
-            # Regex: <tag_name>(non-greedy content)</tag_name>. Tags are case-sensitive.
-            pattern = re.compile(rf"<{tag_name}>(.*?)</{tag_name}>", re.DOTALL)
+            # Regex to find <tag_name>content</tag_name>:
+            # - Allows optional leading whitespace.
+            # - Allows an optional single "junk" character (not whitespace, word character, or '<'). This handles stray punctuation like periods.
+            # - Allows optional whitespace after the junk char and before the tag.
+            # - Matches the tag itself and its content non-greedily.
+            # - Tags are case-sensitive. Content can span multiple lines (re.DOTALL).
+            pattern_str = rf"\s*[^\s\w<]?\s*<{tag_name}>(.*?)</{tag_name}>"
+            pattern = re.compile(pattern_str, re.DOTALL)
             match = pattern.search(content_to_parse, pos=current_parse_offset)
             
             if match:
