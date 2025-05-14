@@ -515,11 +515,25 @@ def evolve_population(
         if not parent_agent.round_history:
             logging.info(f"Parent {parent_agent.agent_id} has no game history this round. Offspring inherits genome without inspection update.")
         else:
-            game_result = parent_agent.round_history[0]
-            outcome = game_result.get('outcome')
-            transcript = game_result.get('transcript') # This is List[Dict[str, str]] like ChatMessage
+            # Get the summary of the game played by the parent (we'll use its game_id)
+            # The first game in round_history is the one to inspect for evolution for now.
+            # THIS REQUIRES THERE TO BE ONE GAME PER GENERATION
+            parent_game_summary = parent_agent.round_history[0]
+            parent_game_id = parent_game_summary.get('game_id')
+            outcome = parent_game_summary.get('outcome')
+            
+            full_game_details_for_parent = None
+            if parent_game_id:
+                full_game_details_for_parent = next((g for g in all_games_this_generation if g.get("game_id") == parent_game_id), None)
 
-            if transcript and isinstance(transcript, list) and outcome in ['win', 'loss']:
+            if not full_game_details_for_parent:
+                logging.warning(f"Parent {parent_agent.agent_id} played game {parent_game_id}, but full details not found in all_games_this_generation. Skipping inspection.")
+                transcript_for_inspection = None
+            else:
+                transcript_for_inspection = full_game_details_for_parent.get('transcript') # This is List[Dict[str, str]] like ChatMessage
+
+            if transcript_for_inspection and isinstance(transcript_for_inspection, list) and outcome in ['win', 'loss']:
+                logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}) - Preparing to inspect game {parent_game_id} with {len(transcript_for_inspection)} transcript entries.")
                 try:
                     parent_variant = goodfire.Variant(parent_agent.model_id)
                     parent_genome_for_api_variant_set = parent_agent.get_genome_for_goodfire_variant()
