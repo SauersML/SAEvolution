@@ -252,12 +252,9 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
             # Example: "<context>", "context>", ".context>" should all find "context" and advance past ">"
             
             # Find the tag name itself.
-            open_tag_name_match = re.search(
-                open_marker_regex_str, 
-                search_text, 
-                re.IGNORECASE, 
-                pos=current_search_position
-            )
+            # Compile the regex for searching with a starting position.
+            compiled_open_marker_regex = re.compile(open_marker_regex_str, re.IGNORECASE)
+            open_tag_name_match = compiled_open_marker_regex.search(search_text, pos=current_search_position)
 
             if not open_tag_name_match:
                 logging.warning(f"Scenario parsing: Start of tag '{tag_name_to_find}' not found. Agent: {proposer_agent.agent_id}. Search text from pos {current_search_position}: '{search_text[current_search_position:current_search_position+200]}...'")
@@ -278,20 +275,20 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
             # Option A: Look for the specific closing tag "/tag_name_to_find"
             # Example: "</context>", "/context>", "/context"
             close_marker_regex_str = r"(?:<)?\s*/\s*\b" + re.escape(tag_name_to_find) + r"\b"
-            close_tag_match = re.search(
-                close_marker_regex_str,
+            # Compile the regex for searching with a starting position.
+            compiled_close_marker_regex = re.compile(close_marker_regex_str, re.IGNORECASE)
+            close_tag_match = compiled_close_marker_regex.search(
                 search_text,
-                re.IGNORECASE,
                 pos=content_start_index # Search after the opening tag's content starts
             )
             if close_tag_match:
                 content_end_index = close_tag_match.start() # Content ends before the closing marker starts
                 # Advance current_search_position past this closing tag for the next iteration
                 # Find the full extent of the closing marker (e.g. including a '>')
-                full_closing_marker_match = re.search(
-                    close_marker_regex_str + r"\s*(?:>)?", # Add optional '>'
+                # Compile the regex for searching with a starting position.
+                compiled_full_closing_marker_regex = re.compile(close_marker_regex_str + r"\s*(?:>)?", re.IGNORECASE) # Add optional '>'
+                full_closing_marker_match = compiled_full_closing_marker_regex.search(
                     search_text,
-                    re.IGNORECASE,
                     pos=close_tag_match.start() # Start search from where the basic closer was found
                 )
                 current_search_position = full_closing_marker_match.end() if full_closing_marker_match else close_tag_match.end()
@@ -303,10 +300,10 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
                 next_tag_name = expected_tag_sequence[i+1]
                 next_tag_open_marker_regex_str = r"\b" + re.escape(next_tag_name) + r"\b"
                 
-                next_tag_open_name_match = re.search(
-                    next_tag_open_marker_regex_str,
+                # Compile the regex for searching with a starting position.
+                compiled_next_tag_open_marker_regex = re.compile(next_tag_open_marker_regex_str, re.IGNORECASE)
+                next_tag_open_name_match = compiled_next_tag_open_marker_regex.search(
                     search_text,
-                    re.IGNORECASE,
                     pos=content_start_index # Search after current tag's content starts
                 )
                 
