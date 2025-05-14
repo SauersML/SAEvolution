@@ -751,18 +751,37 @@ with tab_container_map["🧬 Feature Explorer"]:
 with tab_container_map["🔬 Generation Detail"]:
     st.header("🔬 Generation Detail")
     
-    # Handle navigation or direct selection
-    default_gen_detail_idx = latest_gen_num -1
-    if st.session_state.nav_to_generation is not None and 1 <= st.session_state.nav_to_generation <= latest_gen_num:
-        default_gen_detail_idx = st.session_state.nav_to_generation - 1
-        # Consume nav_to_generation by resetting or by how selectbox index is used
-        # For this tab, we likely just use it once.
-
-    selected_gen_num_detail = st.slider(
-        "Select Generation", 1, latest_gen_num, default_gen_detail_idx + 1, key="gen_detail_slider"
-    )
-    st.session_state.nav_to_generation = selected_gen_num_detail # Keep session state updated if slider changes
-
+    # Handle navigation or direct selection for the generation to display.
+    # If only one generation exists, it must be 1. Otherwise, allow selection via slider.
+    if latest_gen_num == 1:
+        selected_gen_num_detail = 1
+        st.markdown("Displaying Generation 1 (only generation available).")
+        # Check if navigation state is consistent; this is mostly for robustness.
+        if st.session_state.nav_to_generation is not None and st.session_state.nav_to_generation != 1:
+            st.warning(
+                f"Navigation previously targeted generation {st.session_state.nav_to_generation}, "
+                f"but only generation 1 is currently available. Displaying generation 1."
+            )
+    else: # latest_gen_num > 1, so a slider is appropriate.
+        # Determine the default value for the slider.
+        # Default to the latest generation, unless a specific generation is navigated to.
+        default_gen_detail_value = latest_gen_num 
+        if st.session_state.nav_to_generation is not None and \
+           1 <= st.session_state.nav_to_generation <= latest_gen_num:
+            default_gen_detail_value = st.session_state.nav_to_generation
+        
+        selected_gen_num_detail = st.slider(
+            "Select Generation", 
+            min_value=1, 
+            max_value=latest_gen_num, 
+            value=default_gen_detail_value, 
+            key="gen_detail_slider"
+        )
+    
+    # Keep session state updated with the selected generation for this tab's context.
+    # This can influence other tabs or persist the selection.
+    st.session_state.nav_to_generation = selected_gen_num_detail
+    
     if selected_gen_num_detail and selected_gen_num_detail in all_gen_data:
         gen_data = all_gen_data[selected_gen_num_detail]
         st.subheader(f"Summary for Generation {selected_gen_num_detail}")
@@ -847,15 +866,35 @@ with tab_container_map["🔬 Generation Detail"]:
 with tab_container_map["👤 Agent Detail"]:
     st.header("👤 Agent Detail Viewer")
 
-    # Generation selection for agent context
-    default_agent_gen_idx = latest_gen_num - 1
-    if st.session_state.nav_to_generation and 1 <= st.session_state.nav_to_generation <= latest_gen_num:
-        default_agent_gen_idx = st.session_state.nav_to_generation - 1
+    # Generation selection for agent context.
+    # If only one generation exists, it must be 1. Otherwise, allow selection via slider.
+    if latest_gen_num == 1:
+        selected_gen_for_agent = 1
+        st.markdown("Agent context from Generation 1 (only generation available).")
+        # Check if navigation state is consistent.
+        if st.session_state.nav_to_generation is not None and st.session_state.nav_to_generation != 1:
+            st.warning(
+                f"Navigation previously targeted generation {st.session_state.nav_to_generation} for agent context, "
+                f"but only generation 1 is currently available. Using generation 1."
+            )
+    else: # latest_gen_num > 1
+        # Determine the default value for the slider.
+        # Default to the latest generation, unless a specific generation is navigated to.
+        default_agent_gen_value = latest_gen_num
+        if st.session_state.nav_to_generation is not None and \
+           1 <= st.session_state.nav_to_generation <= latest_gen_num:
+            default_agent_gen_value = st.session_state.nav_to_generation
+        
+        selected_gen_for_agent = st.slider(
+            "Select Generation for Agent Context", 
+            min_value=1, 
+            max_value=latest_gen_num, 
+            value=default_agent_gen_value, 
+            key="agent_detail_gen_slider"
+        )
     
-    selected_gen_for_agent = st.slider(
-        "Select Generation for Agent Context", 1, latest_gen_num, default_agent_gen_idx + 1, key="agent_detail_gen_slider"
-    )
-    st.session_state.nav_to_generation = selected_gen_for_agent # Keep session state updated
+    # Update session state with the selected generation, useful for navigation persistence.
+    st.session_state.nav_to_generation = selected_gen_for_agent
 
     if selected_gen_for_agent and selected_gen_for_agent in all_gen_data:
         agents_in_selected_gen = all_gen_data[selected_gen_for_agent].get("population_state", [])
@@ -983,13 +1022,34 @@ with tab_container_map["📜 Game Viewer"]:
     # Nav state: st.session_state.nav_to_agent_id will hold game_id here
     # Nav state: st.session_state.nav_to_generation will hold generation_number
     
-    default_game_gen_idx = latest_gen_num -1
-    if st.session_state.nav_to_generation and 1 <= st.session_state.nav_to_generation <= latest_gen_num:
-        default_game_gen_idx = st.session_state.nav_to_generation -1
-
-    selected_gen_for_games = st.slider(
-        "Select Generation for Games", 1, latest_gen_num, default_game_gen_idx + 1, key="game_view_gen_slider"
-    )
+    # Determine the generation for game viewing.
+    # If only one generation exists, it must be 1. Otherwise, allow selection via slider.
+    if latest_gen_num == 1:
+        selected_gen_for_games = 1
+        st.markdown("Viewing games from Generation 1 (only generation available).")
+        # Check if navigation state is consistent.
+        if st.session_state.nav_to_generation is not None and st.session_state.nav_to_generation != 1:
+            st.warning(
+                f"Navigation previously targeted generation {st.session_state.nav_to_generation} for game viewing, "
+                f"but only generation 1 is currently available. Using generation 1."
+            )
+    else: # latest_gen_num > 1
+        # Determine the default value for the slider.
+        # Default to the latest generation, unless a specific generation is navigated to.
+        default_game_gen_value = latest_gen_num
+        if st.session_state.nav_to_generation is not None and \
+           1 <= st.session_state.nav_to_generation <= latest_gen_num:
+            default_game_gen_value = st.session_state.nav_to_generation
+        
+        selected_gen_for_games = st.slider(
+            "Select Generation for Games", 
+            min_value=1, 
+            max_value=latest_gen_num, 
+            value=default_game_gen_value, 
+            key="game_view_gen_slider"
+        )
+    
+    st.session_state.nav_to_generation = selected_gen_for_games
 
     if selected_gen_for_games:
         games_in_gen = load_games_for_generation_cached(st.session_state.selected_run_id, selected_gen_for_games, state_dir_input)
