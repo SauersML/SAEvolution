@@ -84,23 +84,28 @@ class Agent:
         """
         Converts the agent's internal genome to the format expected by goodfire.Variant().set(),
         which is dict[goodfire.Feature, float].
-        Requires 'index_in_sae' to be present in genome entries.
+        Requires 'index_in_sae' to be present and valid in genome entries for them to be included.
         Skips features where 'index_in_sae' is missing or invalid.
         """
         genome_for_api = {}
         for uuid_str, data in self.genome.items():
-            if isinstance(data, dict) and 'activation' in data and 'label' in data and data.get('index_in_sae') is not None:
+            if isinstance(data, dict) and \
+               'activation' in data and \
+               'label' in data and \
+               data.get('index_in_sae') is not None:
                 try:
+                    feature_uuid_obj = uuid.UUID(uuid_str) if isinstance(uuid_str, str) else uuid_str
+
                     feature_obj = goodfire.Feature(
-                        uuid=uuid_str,
-                        label=data['label'],
+                        uuid=feature_uuid_obj, # Pass UUID object
+                        label=str(data['label']),
                         index_in_sae=int(data['index_in_sae'])
                     )
                     genome_for_api[feature_obj] = float(data['activation'])
-                except (ValueError, TypeError) as e:
-                    logging.warning(f"Agent {self.agent_id}: Could not create Feature object for genome entry {uuid_str} (label: {data.get('label')}, index: {data.get('index_in_sae')}). Error: {e}. Skipping this feature for Variant.")
+                except (ValueError, TypeError) as e: # Catches errors from int(), float(), UUID()
+                    logging.warning(f"Agent {self.agent_id}: Could not create Feature object or convert values for genome entry UUID '{uuid_str}' (label: '{data.get('label')}', index: '{data.get('index_in_sae')}'). Error: {e}. Skipping this feature for Variant.")
             else:
-                logging.debug(f"Agent {self.agent_id}: Genome entry for UUID {uuid_str} is missing 'activation', 'label', or valid 'index_in_sae'. Full data: {data}. Skipping for Variant.")
+                logging.debug(f"Agent {self.agent_id}: Genome entry for UUID '{uuid_str}' is missing 'activation', 'label', or a valid 'index_in_sae'. Full data: {data}. Skipping for Variant.")
         return genome_for_api
 
 
@@ -129,8 +134,7 @@ class Agent:
 
         agent_id = data.get('agent_id')
         model_id = data.get('model_id')
-        # Genome structure is dict[str_uuid, {'activation': float, 'label': str, 'index_in_sae': int | None}]
-        initial_genome = data.get('genome', {})
+        initial_genome_data = data.get('genome', {}) # Default to empty dict
         initial_wealth = data.get('wealth')
         parent_id = data.get('parent_id')
         evo_pos_features = data.get('evolutionary_input_positive_features')
@@ -143,30 +147,29 @@ class Agent:
         if not model_id or not isinstance(model_id, str):
             raise ValueError("Missing or invalid 'model_id' (string) in agent data.")
 
-        if not isinstance(initial_genome, dict):
-            logging.warning(f"Agent {agent_id}: Invalid 'genome' type in data (expected dict, got {type(initial_genome)}). Defaulting to empty genome.")
-            initial_genome = {}
-        else: # inner structure is as expected, or adapt old format
-            parsed_genome = {}
-            for f_uuid, f_data in initial_genome.items():
+        parsed_genome = {}
+        if not isinstance(initial_genome_data, dict):
+            logging.warning(f"Agent {agent_id}: Invalid 'genome' type in data (expected dict, got {type(initial_genome_data)}). Defaulting to empty genome.")
+        else:
+            for f_uuid, f_data in initial_genome_data.items():
                 if isinstance(f_data, dict) and 'activation' in f_data and 'label' in f_data:
-                    # New format with potential index_in_sae
-                    parsed_genome[f_uuid] = {
-                        'activation': float(f_data['activation']),
-                        'label': str(f_data['label']),
-                        'index_in_sae': int(f_data['index_in_sae']) if f_data.get('index_in_sae') is not None else None
-                    }
-                elif isinstance(f_data, (int, float)): # Old format: direct activation value
-                    logging.debug(f"Agent {agent_id}: Genome feature {f_uuid} in old format. Converting. Label will be generic.")
-                    parsed_genome[f_uuid] = {
+                    try:
+                        parsed_genome[str(f_uuid)] = {
+                            'activation': float(f_data['activation']),
+                            'label': str(f_data['label']),
+                            'index_in_sae': int(f_data['index_in_sae']) if f_data.get('index_in_sae') is not None else None
+                        }
+                    except (ValueError, TypeError) as e:
+                        logging.warning(f"Agent {agent_id}: Error parsing genome feature {f_uuid} data '{f_data}': {e}. Skipping.")
+                elif isinstance(f_data, (int, float)): # Handle old format: direct activation value
+                    logging.debug(f"Agent {agent_id}: Genome feature {f_uuid} in old format. Converting. Label will be generic, index_in_sae will be None.")
+                    parsed_genome[str(f_uuid)] = {
                         'activation': float(f_data),
-                        'label': f"Feature {f_uuid[:8]} (label N/A)", # Generic label
-                        'index_in_sae': None # No index info from old format
+                        'label': f"Feature {str(f_uuid)[:8]} (label N/A)",
+                        'index_in_sae': None
                     }
                 else:
                     logging.warning(f"Agent {agent_id}: Malformed genome entry for {f_uuid}: {f_data}. Skipping.")
-            initial_genome = parsed_genome
-
 
         if initial_wealth is None or not isinstance(initial_wealth, (int, float)):
             logging.warning(f"Agent {agent_id}: Missing or invalid 'wealth' in data (expected float/int, got {type(initial_wealth)}). Defaulting to 30.0.")
@@ -175,14 +178,18 @@ class Agent:
         agent = cls(
             agent_id=agent_id,
             model_id=model_id,
-            initial_genome=initial_genome,
+            initial_genome=parsed_genome, # Pass the processed genome
             initial_wealth=float(initial_wealth),
             parent_id=parent_id,
             evolutionary_input_positive_features=evo_pos_features,
             evolutionary_input_negative_features=evo_neg_features
         )
         if current_fitness_score is not None:
-            agent.current_fitness_score = float(current_fitness_score)
+            try:
+                agent.current_fitness_score = float(current_fitness_score)
+            except (ValueError, TypeError):
+                logging.warning(f"Agent {agent_id}: Invalid current_fitness_score value '{current_fitness_score}'. Setting to None.")
+                agent.current_fitness_score = None
         return agent
 
 def initialize_population(config: dict) -> list[Agent]:
@@ -208,34 +215,35 @@ def initialize_population(config: dict) -> list[Agent]:
         logging.warning(f"agent.initial_wealth is not a number ({initial_wealth}). Defaulting to 30.0.")
         initial_wealth = 30.0
 
-    initial_genome_template = agent_config.get('initial_genome', {})
-    if not isinstance(initial_genome_template, dict):
-        logging.warning(f"agent.initial_genome is not a dictionary ({initial_genome_template}). Defaulting to empty genome for all agents.")
-        initial_genome_template = {}
-    else: # new genome structure for template items if they are simple key:value
-        parsed_template = {}
-        for f_uuid, f_data in initial_genome_template.items():
+    initial_genome_template_data = agent_config.get('initial_genome', {})
+    parsed_initial_genome_template = {}
+    if not isinstance(initial_genome_template_data, dict):
+        logging.warning(f"agent.initial_genome is not a dictionary ({initial_genome_template_data}). Defaulting to empty genome template.")
+    else:
+        for f_uuid, f_data in initial_genome_template_data.items():
             if isinstance(f_data, dict) and 'activation' in f_data and 'label' in f_data:
-                parsed_template[f_uuid] = {
-                    'activation': float(f_data['activation']),
-                    'label': str(f_data['label']),
-                    'index_in_sae': int(f_data['index_in_sae']) if f_data.get('index_in_sae') is not None else None
-                }
+                try:
+                    parsed_initial_genome_template[str(f_uuid)] = {
+                        'activation': float(f_data['activation']),
+                        'label': str(f_data['label']),
+                        'index_in_sae': int(f_data['index_in_sae']) if f_data.get('index_in_sae') is not None else None
+                    }
+                except (ValueError, TypeError):
+                     logging.warning(f"Skipping malformed initial_genome template item (dict type): {f_uuid} -> {f_data}")
             elif isinstance(f_data, (int, float)): # Old format template item
-                parsed_template[f_uuid] = {
+                parsed_initial_genome_template[str(f_uuid)] = {
                     'activation': float(f_data),
-                    'label': f"Initial Feature {f_uuid[:8]}",
-                    'index_in_sae': None # Cannot know index for arbitrary initial genome
+                    'label': f"Initial Feature {str(f_uuid)[:8]}", # Generic label for old format
+                    'index_in_sae': None # Cannot know index for arbitrary initial genome feature
                 }
             else:
-                 logging.warning(f"Skipping malformed initial_genome template item: {f_uuid} -> {f_data}")
-        initial_genome_template = parsed_template
-
+                 logging.warning(f"Skipping malformed initial_genome template item (unknown type): {f_uuid} -> {f_data}")
 
     population: list[Agent] = []
     for i in range(pop_size):
         agent_id = str(uuid.uuid4())
-        agent_genome = copy.deepcopy(initial_genome_template)
+        # Each agent gets a deep copy of the parsed template
+        agent_genome = copy.deepcopy(parsed_initial_genome_template)
         try:
             agent = Agent(
                 agent_id=agent_id,
@@ -284,8 +292,8 @@ def calculate_fitness(population: list[Agent]) -> list[float]:
     total_wealth = sum(agent_wealths)
     fitness_scores: list[float] = []
 
-    if total_wealth <= 0:
-        logging.warning("Total population wealth is zero or negative. Assigning equal fitness.")
+    if total_wealth <= 1e-9: # Use a small epsilon for float comparison
+        logging.warning("Total population wealth is zero or effectively zero. Assigning equal fitness.")
         equal_fitness = (1.0 / num_agents) if num_agents > 0 else 0.0
         fitness_scores = [equal_fitness] * num_agents
     else:
@@ -297,7 +305,7 @@ def calculate_fitness(population: list[Agent]) -> list[float]:
 
     sum_fitness = sum(fitness_scores)
     if not math.isclose(sum_fitness, 1.0, rel_tol=1e-9) and sum_fitness > 1e-9 :
-        logging.warning(f"Raw fitness scores sum to {sum_fitness}, not 1.0. This might indicate an issue if total_wealth was positive.")
+        logging.warning(f"Raw fitness scores sum to {sum_fitness:.6f}, not 1.0. This might indicate an issue if total_wealth was positive.")
 
     logging.debug(f"Calculated fitness scores: {['{:.4f}'.format(s) for s in fitness_scores]}")
     return fitness_scores
@@ -324,29 +332,35 @@ def select_parents(population: list[Agent], fitness_scores: list[float], num_off
     valid_weights_present = any(f > 1e-9 for f in fitness_scores)
 
     if not valid_weights_present:
-        logging.warning("All fitness scores are zero or non-positive. Performing uniform random parent selection.")
+        logging.warning("All fitness scores are zero or effectively zero. Performing uniform random parent selection.")
         selected_parents = random.choices(population, k=num_offspring)
     else:
-        try:
-            selected_parents = random.choices(
-                population=population,
-                weights=fitness_scores,
-                k=num_offspring
-            )
-        except ValueError as e:
-            logging.error(f"ValueError during parent selection (likely due to weights): {e}. Falling back to uniform selection.")
+        # weights are non-negative for random.choices
+        sanitized_weights = [max(0.0, w) for w in fitness_scores]
+        if sum(sanitized_weights) < 1e-9: # Still all zero after sanitizing
+            logging.warning("All sanitized fitness scores are zero. Uniform random parent selection fallback.")
             selected_parents = random.choices(population, k=num_offspring)
-        except Exception as e:
-            logging.error(f"Unexpected error during parent selection: {e}", exc_info=True)
-            return []
+        else:
+            try:
+                selected_parents = random.choices(
+                    population=population,
+                    weights=sanitized_weights,
+                    k=num_offspring
+                )
+            except ValueError as e:
+                logging.error(f"ValueError during parent selection (likely due to weights sum to zero): {e}. Falling back to uniform selection.")
+                selected_parents = random.choices(population, k=num_offspring)
+            except Exception as e:
+                logging.error(f"Unexpected error during parent selection: {e}", exc_info=True)
+                return []
 
     logging.info(f"Selected {len(selected_parents)} parents for reproduction.")
     return selected_parents
 
 def apply_algorithmic_genome_update(
     current_genome_state: dict,
-    features_to_reinforce: list[goodfire.Feature], # List of Goodfire Feature objects
-    features_to_suppress: list[goodfire.Feature],  # List of Goodfire Feature objects
+    features_to_reinforce: list[goodfire.Feature],
+    features_to_suppress: list[goodfire.Feature],
     config: dict
 ) -> dict:
     """
@@ -366,11 +380,11 @@ def apply_algorithmic_genome_update(
          return copy.deepcopy(current_genome_state)
 
     evo_config = config.get('evolution', {})
-    learning_rate = float(evo_config.get('learning_rate', 0.05))
-    num_winning_to_use = int(evo_config.get('num_winning_features', 3)) # Max features to use from reinforce list
-    num_losing_to_use = int(evo_config.get('num_losing_features', 3))   # Max features to use from suppress list
-    min_activation = float(evo_config.get('activation_min', -5.0)) # Updated per config
-    max_activation = float(evo_config.get('activation_max', 5.0)) # Updated per config
+    learning_rate = float(evo_config.get('learning_rate', 0.1)) # Updated default per config
+    num_winning_to_use = int(evo_config.get('num_winning_features', 3))
+    num_losing_to_use = int(evo_config.get('num_losing_features', 3))
+    min_activation = float(evo_config.get('activation_min', -5.0))
+    max_activation = float(evo_config.get('activation_max', 5.0))
     target_pos = float(evo_config.get('target_positive', 1.0))
     target_neg = float(evo_config.get('target_negative', -0.1)) # Updated per config
     update_method = evo_config.get('update_method', 'increment')
@@ -397,7 +411,8 @@ def apply_algorithmic_genome_update(
                 new_activation = current_activation + learning_rate * (target_pos - current_activation)
             elif update_method == 'increment':
                 new_activation = current_activation + learning_rate
-            else: # Default to increment
+            else:
+                logging.warning(f"Unknown update_method '{update_method}' in config. Defaulting to 'increment'.")
                 new_activation = current_activation + learning_rate
 
             new_activation = max(min_activation, min(max_activation, new_activation))
@@ -405,7 +420,6 @@ def apply_algorithmic_genome_update(
             logging.debug(f"Genome reinforce: Feature {feature_key} ('{feature_label}') from {current_activation:.4f} to {new_activation:.4f}")
 
     # Process features to suppress (from losing game)
-    # This block will only execute if features_to_reinforce was empty (or a feature was not in both)
     if features_to_suppress:
         for i, feature_obj in enumerate(features_to_suppress):
             if i >= num_losing_to_use:
@@ -425,7 +439,8 @@ def apply_algorithmic_genome_update(
                 new_activation = current_activation + learning_rate * (target_neg - current_activation)
             elif update_method == 'increment':
                 new_activation = current_activation - learning_rate
-            else: # Default to increment (which means decrement for losing)
+            else:
+                logging.warning(f"Unknown update_method '{update_method}' in config. Defaulting to 'increment' (decrement for losing).")
                 new_activation = current_activation - learning_rate
 
             new_activation = max(min_activation, min(max_activation, new_activation))
@@ -469,10 +484,19 @@ def evolve_population(population: list[Agent], fitness_scores: list[float], conf
     if not selected_parents or len(selected_parents) != population_size :
          logging.error(f"Parent selection failed or returned incorrect number of parents ({len(selected_parents)} instead of {population_size}). Returning clones of original population.")
          cloned_population = [Agent.from_dict(p.to_dict()) for p in population]
-         for agent in cloned_population: agent.reset_round_state(initial_wealth)
+         for agent_instance in cloned_population: agent_instance.reset_round_state(initial_wealth) # Renamed agent to agent_instance
          return cloned_population
 
-    client = get_goodfire_client(config) # Get client once for the generation
+    try:
+        client = get_goodfire_client(config)
+    except Exception as e:
+        logging.critical(f"Failed to initialize Goodfire client in evolve_population: {e}. Cannot proceed with feature inspection based evolution.", exc_info=True)
+        # Fallback: Create offspring by cloning parents without genome modification
+        cloned_population = [Agent.from_dict(p.to_dict()) for p in selected_parents] # Use selected_parents
+        for agent_instance in cloned_population: agent_instance.reset_round_state(initial_wealth)
+        logging.warning("Falling back to cloning parents due to Goodfire client initialization failure.")
+        return cloned_population
+
 
     for parent_agent in selected_parents:
         offspring_genome = copy.deepcopy(parent_agent.genome)
@@ -484,30 +508,27 @@ def evolve_population(population: list[Agent], fitness_scores: list[float], conf
         if not parent_agent.round_history:
             logging.info(f"Parent {parent_agent.agent_id} has no game history this round. Offspring inherits genome without inspection update.")
         else:
-            game_result = parent_agent.round_history[0] # Assuming one game per agent
+            game_result = parent_agent.round_history[0]
             outcome = game_result.get('outcome')
-            transcript = game_result.get('transcript')
+            transcript = game_result.get('transcript') # This is List[Dict[str, str]] like ChatMessage
 
-            if transcript and outcome in ['win', 'loss']:
+            if transcript and isinstance(transcript, list) and outcome in ['win', 'loss']:
                 try:
                     parent_variant = goodfire.Variant(parent_agent.model_id)
-                    parent_genome_for_api = parent_agent.get_genome_for_goodfire_variant()
-                    if parent_genome_for_api:
-                        parent_variant.set(parent_genome_for_api)
+                    parent_genome_for_api_variant_set = parent_agent.get_genome_for_goodfire_variant()
+                    if parent_genome_for_api_variant_set:
+                        parent_variant.set(parent_genome_for_api_variant_set)
 
                     logging.debug(f"Inspecting game transcript for parent {parent_agent.agent_id} (outcome: {outcome}) using aggregate_by='{inspect_aggregate_by_val}'")
-                    # The client.features.inspect is synchronous as per the SDK structure provided
+
                     context_inspector = client.features.inspect(
-                        messages=transcript,
+                        messages=transcript, # transcript should be List[ChatMessage]
                         model=parent_variant,
-                        features=None, # Inspect all features
+                        features=None,
                         aggregate_by=inspect_aggregate_by_val
                     )
-                    # For sync client, features are fetched during inspect or available via top()
-                    # ContextInspector.top() returns FeatureActivations, which contains (Feature, activation_strength)
+
                     top_feature_activations = context_inspector.top(k=inspect_top_k_val)
-                    
-                    # Extract goodfire.Feature objects
                     activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature')]
 
                     logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}): Inspected game, found {len(activated_features_in_game)} top active features.")
@@ -521,22 +542,19 @@ def evolve_population(population: list[Agent], fitness_scores: list[float], conf
 
                 except Exception as e:
                     logging.error(f"Error during feature inspection for parent {parent_agent.agent_id}: {e}", exc_info=True)
-                    # Offspring inherits genome without update if inspection fails
             else:
-                logging.info(f"Parent {parent_agent.agent_id} outcome ('{outcome}') not win/loss or no transcript. Offspring inherits genome without inspection update.")
+                log_msg_detail = "no transcript" if not transcript else f"outcome '{outcome}' not win/loss"
+                logging.info(f"Parent {parent_agent.agent_id} had {log_msg_detail}. Offspring inherits genome without inspection update.")
 
-        # Apply genome update based on identified features (if any)
         if features_to_reinforce_objs or features_to_suppress_objs:
             offspring_genome = apply_algorithmic_genome_update(
-                current_genome_state=offspring_genome, # Already a copy of parent's
+                current_genome_state=offspring_genome,
                 features_to_reinforce=features_to_reinforce_objs,
                 features_to_suppress=features_to_suppress_objs,
                 config=config
             )
         else:
-            # This path is taken if inspection failed, outcome was not win/loss, or no features found by inspect.
-            # offspring_genome is already a copy of parent_agent.genome.
-            logging.debug(f"No features identified from inspection for parent {parent_agent.agent_id} to apply updates. Offspring inherits genome.")
+            logging.debug(f"No features identified from inspection for parent {parent_agent.agent_id} to apply updates, or outcome was not win/loss/tie. Offspring inherits genome.")
 
 
         offspring_agent_id = str(uuid.uuid4())
@@ -557,7 +575,7 @@ def evolve_population(population: list[Agent], fitness_scores: list[float], conf
 
     if len(new_population) != population_size:
          logging.warning(f"Evolution resulted in population size {len(new_population)}, but expected {population_size}. "
-                       "This might be due to errors in offspring creation or parent selection issues.")
+                       "This might be due to errors in offspring creation during the loop.")
 
     logging.info(f"Evolution complete. New population size: {len(new_population)}.")
     return new_population
