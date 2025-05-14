@@ -272,16 +272,52 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
 
 
             # 3. Adjudication
-            logging.debug(f"Game {game_id}: Requesting adjudication.")
-            adjudication_final_text, adjudication_llm_prompt = adjudicate_interaction(
-                scenario_info, current_transcript, config
-            )
-            game_details_dict["adjudication_result"] = adjudication_final_text
-            game_details_dict["adjudication_prompt"] = adjudication_llm_prompt
+            logging.debug(f"Game {game_id}: Preparing transcript with IDs for adjudication.")
+            # Format transcript with message IDs (e.g., A1, B1, A2, B2)
+            # This needs player_A_game_role and player_B_game_role which are in game_details_dict
+            player_A_role_label = game_details_dict.get("player_A_game_role") # e.g., "Role A"
+            player_B_role_label = game_details_dict.get("player_B_game_role") # e.g., "Role B"
             
+            labeled_transcript_lines = []
+            turn_counters = {player_A_role_label: 0, player_B_role_label: 0}
 
-            if adjudication_final_text not in ['Role A Wins', 'Role B Wins', 'Tie', 'error']:
-                game_details_dict["adjudication_raw_llm_output"] = adjudication_final_text
+            for turn_data in current_transcript:
+                role_in_turn = turn_data.get("role") # This is "Role A" or "Role B"
+                content = turn_data.get("content", "[empty_content]")
+                
+                # Determine if this turn was by Player A or Player B based on game_details_dict roles
+                # turn_data["role"] IS player_A_role_label or player_B_role_label
+                # The key is to map "Role A" -> "A" prefix, "Role B" -> "B" prefix
+                
+                id_prefix = "U" # Unknown prefix if role mapping fails
+                if role_in_turn == player_A_role_label:
+                    id_prefix = "A" # Assuming player_A_game_role is always "Role A" or similar for prefix
+                elif role_in_turn == player_B_role_label:
+                    id_prefix = "B" # Assuming player_B_game_role is always "Role B" or similar for prefix
+                
+                turn_counters[role_in_turn] += 1
+                message_id_for_adj = f"{id_prefix}{turn_counters[role_in_turn]}"
+                
+                labeled_transcript_lines.append(f"{message_id_for_adj} ({role_in_turn}): {content}")
+            
+            labeled_transcript_str_for_adj = "\n".join(labeled_transcript_lines)
+            logging.debug(f"Game {game_id}: Labeled transcript for adjudicator:\n{labeled_transcript_str_for_adj}")
+
+            logging.debug(f"Game {game_id}: Requesting adjudication with new multi-part output format.")
+            (parsed_outcome, win_msg_id, lose_msg_id, 
+             scratchpad, adj_prompt_sent, raw_adj_output) = adjudicate_interaction(
+                scenario_info, labeled_transcript_str_for_adj, config # Pass the string
+            )
+            
+            # Store all new adjudication details
+            game_details_dict["adjudication_result"] = parsed_outcome # This is 'Role A Wins', 'Role B Wins', or 'Tie'
+            game_details_dict["adjudication_win_message_id"] = win_msg_id
+            game_details_dict["adjudication_lose_message_id"] = lose_msg_id
+            game_details_dict["adjudication_scratchpad"] = scratchpad
+            game_details_dict["adjudication_prompt"] = adj_prompt_sent # The prompt that included the labeled transcript
+            game_details_dict["adjudication_raw_llm_output"] = raw_adj_output # The full XML response
+
+            adjudication_final_text = parsed_outcome # Use this for winner/loser determination below
 
             if adjudication_final_text == 'Role A Wins':
                 actual_winner_agent = agent1 if game_details_dict["player_A_game_role"] == 'Role A' else agent2
