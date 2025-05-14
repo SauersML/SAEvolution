@@ -150,9 +150,14 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         "scenario_raw_llm_output": None,
         "scenario_generation_successful": False,
         "transcript": [],
-        "adjudication_prompt": None,
-        "adjudication_raw_llm_output": None,
-        "adjudication_result": "Error: Adjudication not run or failed.", # Default
+        "adjudication_prompt_scratchpad": None, # Prompt for the first adjudication call (scratchpad)
+        "adjudication_raw_llm_output_scratchpad": None, # Raw LLM output from the first call
+        "adjudication_scratchpad": None, # Parsed content of the <scratchpad> tag
+        "adjudication_prompt_outcome_ids": None, # Prompt for the second adjudication call (outcome/IDs)
+        "adjudication_raw_llm_output_outcome_ids": None, # Raw LLM output from the second call
+        "adjudication_result": "Error: Adjudication not run or failed.", # Final parsed outcome ('Role A Wins', 'Role B Wins', 'Tie', 'error')
+        "adjudication_win_message_id": None, # Parsed win_message_id
+        "adjudication_lose_message_id": None, # Parsed lose_message_id
         "betting_details": None,
         "wealth_changes": None,
         "final_player_A_wealth": agent1.wealth, # Initial wealth, updated at the end
