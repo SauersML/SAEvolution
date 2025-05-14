@@ -1548,8 +1548,15 @@ with tab_container_map["📜 Game Viewer"]:
 
                     st.markdown("##### ⚖️ Adjudication & Outcome")
                     adj_result = game_to_display.get("adjudication_result", "N/A")
-                    adj_prompt = game_to_display.get("adjudication_prompt")
-                    adj_raw_llm_output = game_to_display.get("adjudication_raw_llm_output")
+                    # Adjudication prompts
+                    adj_prompt_scratchpad = game_to_display.get("adjudication_prompt_scratchpad")
+                    adj_prompt_outcome_ids = game_to_display.get("adjudication_prompt_outcome_ids")
+                    # Adjudication raw outputs
+                    adj_raw_llm_output_scratchpad = game_to_display.get("adjudication_raw_llm_output_scratchpad")
+                    adj_raw_llm_output_outcome_ids = game_to_display.get("adjudication_raw_llm_output_outcome_ids")
+                    # Parsed scratchpad content
+                    adj_scratchpad_content = game_to_display.get("adjudication_scratchpad")
+                    
                     wealth_ch = game_to_display.get("wealth_changes", {})
                     final_a_wealth = game_to_display.get("final_player_A_wealth")
                     final_b_wealth = game_to_display.get("final_player_B_wealth")
@@ -1581,15 +1588,24 @@ with tab_container_map["📜 Game Viewer"]:
                     if betting_details:
                         with st.expander("Betting Details"):
                             st.json(betting_details)
-                    
-                    if adj_prompt:
-                        with st.expander("Adjudication Prompt"):
-                            st.text_area("Adjudicator Prompt Sent", value=adj_prompt, height=200, disabled=True, key=f"adj_prompt_{selected_game_id_viewer}")
-                    
-                    if adj_raw_llm_output and adj_raw_llm_output != adj_result : # Show raw output if it's different from the cleaned result
-                        with st.expander("Raw Adjudicator LLM Output"):
-                             st.text_area("Raw Output from Adjudicator LLM", value=adj_raw_llm_output, height=100, disabled=True, key=f"adj_raw_{selected_game_id_viewer}")
 
+                    if adj_scratchpad_content:
+                        with st.expander("Adjudicator Scratchpad Content (Parsed from 1st Call)", expanded=False):
+                            st.text_area("Parsed Scratchpad", value=adj_scratchpad_content, height=150, disabled=True, key=f"adj_scratchpad_content_{selected_game_id_viewer}")
+
+                    if adj_prompt_scratchpad:
+                        with st.expander("Adjudication Prompt (Scratchpad Call - 1st Call)", expanded=False):
+                            st.text_area("Prompt for Scratchpad Generation", value=adj_prompt_scratchpad, height=200, disabled=True, key=f"adj_prompt_scratchpad_{selected_game_id_viewer}")
+                    if adj_raw_llm_output_scratchpad:
+                        with st.expander("Raw LLM Output (Scratchpad Call - 1st Call)", expanded=False):
+                             st.text_area("Raw LLM Output for Scratchpad Generation", value=adj_raw_llm_output_scratchpad, height=100, disabled=True, key=f"adj_raw_scratchpad_{selected_game_id_viewer}")
+                    
+                    if adj_prompt_outcome_ids:
+                        with st.expander("Adjudication Prompt (Outcome/IDs Call - 2nd Call)", expanded=False):
+                            st.text_area("Prompt for Outcome/IDs Determination", value=adj_prompt_outcome_ids, height=200, disabled=True, key=f"adj_prompt_outcome_ids_{selected_game_id_viewer}")
+                    if adj_raw_llm_output_outcome_ids: 
+                        with st.expander("Raw LLM Output (Outcome/IDs Call - 2nd Call)", expanded=False):
+                             st.text_area("Raw LLM Output for Outcome/IDs Determination", value=adj_raw_llm_output_outcome_ids, height=100, disabled=True, key=f"adj_raw_outcome_ids_{selected_game_id_viewer}")
 
 # --- 🗓️ Event Log Tab ---
 with tab_container_map["🗓️ Event Log"]:
