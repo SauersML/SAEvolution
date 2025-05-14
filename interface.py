@@ -110,10 +110,10 @@ def _execute_api_call(api_call_func: callable, *args, **kwargs):
                 f"for {getattr(api_call_func, '__name__', 'API call')}. Retrying in {current_delay:.2f}s. Error: {e}"
             )
             last_exception = e
-        except goodfire_exceptions.GoodfireError as e: # Catch other Goodfire-specific errors
-            # Decide if generic GoodfireErrors are retriable. For now, let's assume they might be.
+        except goodfire_exceptions.GoodfireBaseException as e: # Catch other Goodfire-specific base errors
+            # Decide if generic GoodfireBaseExceptions are retriable. For now, let's assume they might be.
             logging.warning(
-                f"Goodfire API Error ({type(e).__name__}) on attempt {attempt + 1}/{max_retries} "
+                f"Goodfire API Base Error ({type(e).__name__}) on attempt {attempt + 1}/{max_retries} "
                 f"for {getattr(api_call_func, '__name__', 'API call')}. Retrying in {current_delay:.2f}s. Error: {e}"
             )
             last_exception = e
@@ -380,7 +380,7 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     except TimeoutError:
          logging.error(f"Timeout generating scenario for agent {proposer_agent.agent_id} after all retries.")
          return None, final_prompt_text
-    except goodfire_exceptions.GoodfireError as e:
+    except goodfire_exceptions.GoodfireBaseException as e: # Catching the base Goodfire exception
         logging.error(f"Goodfire API error generating scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
         return None, final_prompt_text
     except Exception as e:
@@ -481,7 +481,7 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
     except TimeoutError:
          logging.error(f"Timeout generating response for agent {agent.agent_id} after all retries.")
          return None, prompt_text_for_llm
-    except goodfire_exceptions.GoodfireError as e:
+    except goodfire_exceptions.GoodfireBaseException as e: # Catching the base Goodfire exception
         logging.error(f"Goodfire API error generating response for agent {agent.agent_id}: {e}", exc_info=True)
         return None, prompt_text_for_llm
     except Exception as e:
@@ -589,7 +589,7 @@ def adjudicate_interaction(scenario_data: dict, transcript: list, config: dict) 
     except TimeoutError:
          logging.error(f"Timeout during adjudication after all retries. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'")
          return "Tie", adjudication_prompt_text
-    except goodfire_exceptions.GoodfireError as e:
+    except goodfire_exceptions.GoodfireBaseException as e: # Catching the base Goodfire exception
         logging.error(f"Goodfire API error during adjudication: {e}. Defaulting to Tie. Raw LLM output (if captured): '{raw_adjudicator_llm_output}'", exc_info=True)
         return "Tie", adjudication_prompt_text
     except Exception as e:
@@ -687,7 +687,7 @@ def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant
     except TimeoutError:
         logging.error(f"Timeout during contrastive analysis for {agent_id_for_log} after all retries.")
         return None, None
-    except goodfire_exceptions.GoodfireError as e:
+    except goodfire_exceptions.GoodfireBaseException as e: # Catching the base Goodfire exception
         logging.error(f"Goodfire API error during contrastive analysis for {agent_id_for_log}: {e}", exc_info=True)
         return None, None
     except Exception as e:
