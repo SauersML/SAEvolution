@@ -298,7 +298,10 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
             # The content ends before the next tag's opening marker if that comes first.
             if i + 1 < len(expected_tag_sequence):
                 next_tag_name = expected_tag_sequence[i+1]
-                next_tag_open_marker_regex_str = r"\b" + re.escape(next_tag_name) + r"\b"
+                # This regex looks for an opening angle bracket '<', followed by optional whitespace,
+                # then the tag name, and then ensures it's followed by either a closing angle bracket '>' or whitespace.
+                # This makes it more specific to finding an actual tag opening rather than just the tag name as a word.
+                next_tag_open_marker_regex_str = r"<\s*" + re.escape(next_tag_name) + r"(?:>|\s)"
                 
                 # Compile the regex for searching with a starting position.
                 compiled_next_tag_open_marker_regex = re.compile(next_tag_open_marker_regex_str, re.IGNORECASE)
