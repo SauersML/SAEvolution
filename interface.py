@@ -835,22 +835,26 @@ def adjudicate_interaction(scenario_info: dict, transcript_with_ids: str, config
                     is_lose_msg_id_valid = bool(lose_message_id_temp and re.match(valid_msg_id_pattern, lose_message_id_temp))
 
                     if not raw_outcome_tag_content:
-                        logging.warning(f"Could not parse <outcome> tag from adjudicator's second response. Raw: {raw_output_outcome_ids[:300]}")
-                        # final_parsed_outcome remains "error", but we might still get a win from message IDs below
+                        logging.warning(f"Could not parse <outcome> tag from adjudicator's second response. Raw: {raw_output_outcome_ids[:300]}. Current final_parsed_outcome: '{final_parsed_outcome}'.")
+                        # final_parsed_outcome remains "error", will be checked by override logic
                     else:
-                        outcome_lower = raw_outcome_tag_content.lower()
-                        if "role a wins" in outcome_lower:
+                        # Normalize and check outcome tag content more leniently
+                        outcome_text_normalized = raw_outcome_tag_content.strip().lower()
+                        if outcome_text_normalized == "role a wins" or outcome_text_normalized == "role a":
                             final_parsed_outcome = "Role A Wins"
-                        elif "role b wins" in outcome_lower:
+                        elif outcome_text_normalized == "role b wins" or outcome_text_normalized == "role b":
                             final_parsed_outcome = "Role B Wins"
-                        elif "tie" in outcome_lower:
+                        elif outcome_text_normalized == "tie":
                             final_parsed_outcome = "Tie"
-                        else: # Non-canonical outcome from <outcome> tag
-                            logging.warning(f"Non-canonical content in <outcome> tag: '{raw_outcome_tag_content}'. Will check message IDs.")
-                            # final_parsed_outcome remains "error" for now, to be potentially overridden by message IDs
-
-                    # Override outcome based on win_message_id if outcome is currently "error" or non-canonical,
-                    # AND a valid win_message_id is present.
+                        else:
+                            # Outcome tag content is not one of the expected exact or shortened phrases.
+                            logging.warning(f"Non-canonical or unexpected content in <outcome> tag: '{raw_outcome_tag_content}'. Current final_parsed_outcome: '{final_parsed_outcome}'. Will rely on message IDs for override if possible.")
+                            # final_parsed_outcome remains "error" (its default) or its value from a previous step if logic changes,
+                            # allowing the override logic below to take effect if applicable.
+                    
+                    # Override outcome based on win_message_id if outcome is still "error" (e.g. outcome tag missing or completely unparseable)
+                    # or if the outcome tag had content that was not one of the recognized win/loss/tie states.
+                    # This ensures that if a valid win_message_id is present, it can dictate a win.
                     if final_parsed_outcome == "error" or \
                        (raw_outcome_tag_content and final_parsed_outcome not in ["Role A Wins", "Role B Wins", "Tie"]):
                         if is_win_msg_id_valid:
