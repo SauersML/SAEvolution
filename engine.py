@@ -410,19 +410,6 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
                     logging.debug(f"Game {game_id}: Appended live game detail to {games_data_filename_live}")
                 except Exception as e_append:
                     logging.error(f"Game {game_id}: Failed to append live game detail to {games_data_filename_live}: {e_append}")
-
-                # 2. Update _latest_generation_number.txt to ensure the current generation is "visible"
-                #    to the dashboard. This write ensures the dashboard knows the current generation_number is active.
-                latest_gen_tracker_path_live = run_dir_path_in_engine / "_latest_generation_number.txt"
-                try:
-                    # It's generally safe to just write the current generation number.
-                    # If multiple games finish nearly simultaneously, they'll all write the same current gen number.
-                    # The dashboard will read this file on its refresh cycle.
-                    with open(latest_gen_tracker_path_live, 'w') as f:
-                        f.write(str(generation_number))
-                    logging.debug(f"Game {game_id}: Updated _latest_generation_number.txt to {generation_number} for live dashboard view.")
-                except Exception as e_tracker:
-                    logging.error(f"Game {game_id}: Failed to update _latest_generation_number.txt for live view: {e_tracker}")
         except Exception as e_live_persist_outer:
             logging.error(f"Game {game_id}: Outer error during live data persistence: {e_live_persist_outer}", exc_info=True)
         
