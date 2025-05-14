@@ -71,226 +71,241 @@ def load_full_run_data(run_id: str, state_base_dir: str):
         st.warning(f"Config snapshot not found for run {run_id}")
         return None # Config is essential
 
-    # Load latest generation number
+
+
+
+
+
+
+
+
+
+
+
+
+    # Load latest fully checkpointed generation number from the tracker file
     tracker_path = base_path / LATEST_GEN_TRACKER_FILENAME
-    latest_generation_number = None
+    last_fully_checkpointed_gen_num = 0 # Default if tracker is missing or invalid
     if tracker_path.exists():
         with open(tracker_path, 'r') as f:
             content = f.read().strip()
             if content:
                 try:
-                    latest_generation_number = int(content)
+                    last_fully_checkpointed_gen_num = int(content)
                 except ValueError:
-                    st.error(f"Invalid content in latest generation tracker for {run_id}.")
-                    return None
-    if latest_generation_number is None:
-        st.warning(f"No generation data found for run '{run_id}'.")
-        return None
+                    st.error(f"Invalid content in latest generation tracker for {run_id}. Could not parse generation number. Will attempt to load data assuming generation 0 was last checkpoint.")
+                    # last_fully_checkpointed_gen_num remains 0. This allows the dashboard to still try loading games for gen 1.
+    
+    # This variable will store the highest generation number for which any data (full state or just games) is found.
+    # It's used to inform the UI about the extent of available data.
+    max_gen_for_dashboard_display = last_fully_checkpointed_gen_num
 
-    # Load all generation data
-    all_generation_data = {}
+    # Initialize data structures
+    all_generation_data = {} # Stores content of generation_XXXX.json (full state)
     all_agents_by_id = defaultdict(list)
-    all_active_features = {} # uuid -> label
-    generation_summary_list = []
-    interesting_events = []
+    all_active_features = {} # Stores uuid -> label for features encountered
+    generation_summary_list = [] # List to build the generation_summary_df
+    interesting_events = [] # List for various event log entries
 
-    for gen_num in range(1, latest_generation_number + 1):
+    # Define numeric columns for generation_summary_df conversion upfront
+    numeric_cols_for_summary_df = ["avg_fitness", "min_fitness", "max_fitness", "avg_wealth", "unique_genomes_approx", "total_games_played_in_generation"]
+
+    # --- Phase 1: Load data from fully checkpointed generations (generation_XXXX.json files) ---
+    # This includes population states, detailed agent genomes, and generation summary metrics.
+    # Events derived from this full state data are also processed here.
+    for gen_num in range(1, last_fully_checkpointed_gen_num + 1):
         gen_file_path = base_path / f"generation_{gen_num:04d}.json"
         if gen_file_path.exists():
-            with open(gen_file_path, 'r') as f:
-                gen_data = json.load(f)
-                all_generation_data[gen_num] = gen_data
-                interesting_events.append({
-                    "generation": gen_num,
-                    "timestamp": gen_data.get("timestamp_completed"),
-                    "type": "Generation Completed",
-                    "description": f"Generation {gen_num} processing finished."
-                })
+            gen_data = None
+            try:
+                with open(gen_file_path, 'r') as f:
+                    gen_data = json.load(f)
+            except json.JSONDecodeError as e:
+                st.error(f"Error decoding JSON from {gen_file_path}: {e}")
+                continue # Skip this problematic generation file
 
-                # Process population state for agent tracking and feature collection
-                population_state = gen_data.get("population_state", [])
-                for agent_dict in population_state:
-                    agent_dict['generation_number'] = gen_num # Add generation number for easier access
-                    all_agents_by_id[agent_dict['agent_id']].append(agent_dict)
-                    
-                    genome = agent_dict.get("genome", {})
-                    for feature_uuid, feature_data in genome.items():
-                        if isinstance(feature_data, dict): # New format: {'activation': float, 'label': str}
-                            activation = feature_data.get('activation', 0.0)
-                            label = feature_data.get('label', f"Label for {feature_uuid[:8]}...") # Fallback label
-                        else: # Old format: float activation
-                            activation = feature_data
-                            label = f"Unknown Label ({feature_uuid[:8]})" # No label available
+            if gen_data is None: continue # Should not happen if open was successful and no JSONDecodeError
 
-                        if abs(activation) > 1e-9: # Non-zero activation
-                            if feature_uuid not in all_active_features:
-                                all_active_features[feature_uuid] = label
-                                interesting_events.append({
-                                    "generation": gen_num,
-                                    "timestamp": gen_data.get("timestamp_completed"),
-                                    "type": "Feature Appeared",
-                                    "description": f"Feature '{get_feature_display_name(feature_uuid, label)}' first appeared with non-zero activation (Agent: {get_agent_display_name(agent_dict['agent_id'])})."
-                                })
+            all_generation_data[gen_num] = gen_data # Store the full state for this generation
+
+            # Event: Generation Completed
+            interesting_events.append({
+                "generation": gen_num,
+                "timestamp": gen_data.get("timestamp_completed"),
+                "type": "Generation Completed",
+                "description": f"Generation {gen_num} processing finished."
+            })
+
+            # Process population state for agent tracking and feature collection
+            population_state = gen_data.get("population_state", [])
+            for agent_dict in population_state:
+                agent_dict['generation_number'] = gen_num # Augment agent data with its generation
+                all_agents_by_id[agent_dict['agent_id']].append(agent_dict)
                 
-                # Generation Summary for Overview Curves
-                summary = gen_data.get("generation_summary_metrics", {})
-                summary["generation_number"] = gen_num
-                summary["timestamp_completed"] = gen_data.get("timestamp_completed")
-                population_state = gen_data.get("population_state", [])
-                if population_state:
-                    # A more robust way to count unique genomes (if they are complex dicts)
-                    genome_fingerprints = []
-                    for agent_s in population_state:
-                        g = agent_s.get("genome", {})
-                        # Create a sorted tuple of (uuid, activation_val) for consistent hashing
-                        fp_items = []
-                        for uuid_key, data_val in g.items():
-                            act = data_val.get('activation') if isinstance(data_val, dict) else data_val
-                            fp_items.append((uuid_key, round(act, 5))) # Round to avoid float precision issues
-                        genome_fingerprints.append(tuple(sorted(fp_items)))
-                    summary["unique_genomes_approx"] = len(set(genome_fingerprints))
-                else:
-                    summary["unique_genomes_approx"] = 0
-                generation_summary_list.append(summary)
+                genome = agent_dict.get("genome", {})
+                for feature_uuid, feature_data in genome.items():
+                    if isinstance(feature_data, dict): # Modern genome format
+                        activation = feature_data.get('activation', 0.0)
+                        label = feature_data.get('label', f"Label for {feature_uuid[:8]}...")
+                    else: # Older genome format (direct activation value)
+                        activation = feature_data
+                        label = f"Unknown Label ({feature_uuid[:8]})"
 
+                    if abs(activation) > 1e-9: # If feature has non-zero activation
+                        if feature_uuid not in all_active_features:
+                            all_active_features[feature_uuid] = label
+                            # Event: Feature Appeared
+                            interesting_events.append({
+                                "generation": gen_num,
+                                "timestamp": gen_data.get("timestamp_completed"),
+                                "type": "Feature Appeared",
+                                "description": f"Feature '{get_feature_display_name(feature_uuid, label)}' first appeared with non-zero activation (Agent: {get_agent_display_name(agent_dict['agent_id'])})."
+                            })
+            
+            # Prepare data for Generation Summary DataFrame (for overview curves)
+            summary_metrics = gen_data.get("generation_summary_metrics", {})
+            summary_entry = {
+                "generation_number": gen_num,
+                "timestamp_completed": gen_data.get("timestamp_completed"),
+                "avg_fitness": summary_metrics.get("avg_fitness"),
+                "min_fitness": summary_metrics.get("min_fitness"),
+                "max_fitness": summary_metrics.get("max_fitness"),
+                "avg_wealth": summary_metrics.get("avg_wealth"),
+                "total_games_played_in_generation": summary_metrics.get("total_games_played_in_generation")
+            }
+            # Calculate unique genomes for summary
+            current_gen_population_for_summary = gen_data.get("population_state", [])
+            if current_gen_population_for_summary:
+                genome_fingerprints = []
+                for agent_s in current_gen_population_for_summary:
+                    g = agent_s.get("genome", {})
+                    fp_items = []
+                    for uuid_key, data_val in g.items():
+                        act = data_val.get('activation') if isinstance(data_val, dict) else data_val
+                        fp_items.append((uuid_key, round(act, 5))) # Round to avoid float precision issues
+                    genome_fingerprints.append(tuple(sorted(fp_items)))
+                summary_entry["unique_genomes_approx"] = len(set(genome_fingerprints))
+            else:
+                summary_entry["unique_genomes_approx"] = 0
+            generation_summary_list.append(summary_entry)
+
+    # Build the Generation Summary DataFrame from fully checkpointed generations
     generation_summary_df = pd.DataFrame(generation_summary_list)
-    numeric_cols = ["avg_fitness", "min_fitness", "max_fitness", "avg_wealth", "unique_genomes_approx", "total_games_played_in_generation"]
-    for col in numeric_cols:
+    for col in numeric_cols_for_summary_df:
         if col in generation_summary_df.columns:
             generation_summary_df[col] = pd.to_numeric(generation_summary_df[col], errors='coerce')
 
-
-    # Reconstruct Lineages
-    lineages = {} # progenitor_id -> list of descendant_ids (including self)
-    progenitor_map = {} # agent_id -> progenitor_id
-    
+    # --- Reconstruct Lineages (based on data from fully checkpointed generations) ---
+    lineages = {} 
+    progenitor_map = {} 
     # First pass: identify progenitors (Gen 1 agents)
-    if 1 in all_generation_data:
+    if 1 in all_generation_data: # Check if gen 1 data was loaded (i.e., last_fully_checkpointed_gen_num >= 1)
         for agent_dict in all_generation_data[1].get("population_state", []):
             agent_id = agent_dict['agent_id']
             lineages[agent_id] = [agent_id] # Progenitor is part of its own lineage
             progenitor_map[agent_id] = agent_id
+            # Event: Lineage Founded
             interesting_events.append({
                 "generation": 1, "timestamp": all_generation_data[1].get("timestamp_completed"),
                 "type": "Lineage Founded",
                 "description": f"Progenitor {get_agent_display_name(agent_id)} founded a new lineage."
             })
 
-
-    # Subsequent passes: build out lineages
-    for gen_num in range(1, latest_generation_number + 1):
-        if gen_num not in all_generation_data: continue
+    # Subsequent passes: build out lineages up to the last fully checkpointed generation
+    for gen_num in range(1, last_fully_checkpointed_gen_num + 1):
+        if gen_num not in all_generation_data: continue # Should not happen if loop is correct
         for agent_dict in all_generation_data[gen_num].get("population_state", []):
             agent_id = agent_dict['agent_id']
-            parent_id = agent_dict.get('parent_id') # Assumes parent_id is stored
-            
+            parent_id = agent_dict.get('parent_id') 
             if parent_id and parent_id in progenitor_map:
                 progenitor_id_of_parent = progenitor_map[parent_id]
-                if agent_id not in lineages[progenitor_id_of_parent]: # Avoid duplicates if data is reprocessed
+                if agent_id not in lineages[progenitor_id_of_parent]: 
                     lineages[progenitor_id_of_parent].append(agent_id)
                 progenitor_map[agent_id] = progenitor_id_of_parent
             elif parent_id and parent_id not in progenitor_map:
-                # This case implies an agent whose parent's lineage isn't yet traced (shouldn't happen if processed gen by gen)
-                # Or an agent whose parent is from a much earlier gen and wasn't a progenitor.
-                # For simplicity, we'll treat such "orphans" appearing later as new pseudo-progenitors if their parent isn't a known progenitor.
-                # This might happen if data is partial. A more robust solution would trace back parent_id recursively.
-                if agent_id not in lineages: # If it's not already part of a lineage
+                # Handle cases where an agent's parent isn't in the progenitor map (e.g., orphan or data anomaly)
+                if agent_id not in lineages: 
                     lineages[agent_id] = [agent_id]
                     progenitor_map[agent_id] = agent_id
-                    # Log this as a potential data anomaly or late-appearing lineage root.
                     st.sidebar.warning(f"Agent {agent_id} (Gen {gen_num}) has parent {parent_id} not in progenitor_map. Treating as new lineage root for now.")
-            # Agents in Gen 1 are already handled as progenitors.
 
-    # Add more interesting events based on aggregated data
-    # Thresholds for "interesting" event logging
+    # --- Process Threshold-based and Evolutionary Events (based on fully checkpointed data) ---
     LINEAGE_MEMBER_COUNT_THRESHOLDS = [5, 10, 25, 50, 100] 
     FEATURE_AVG_ACTIVATION_THRESHOLD = 0.5
-    # Track if a threshold has been met to avoid duplicate event logging per threshold per lineage/feature
-    lineage_thresholds_met = defaultdict(lambda: defaultdict(bool)) # lineage_id -> threshold -> bool
-    feature_activation_thresholds_met = defaultdict(bool) # feature_uuid -> bool
+    lineage_thresholds_met = defaultdict(lambda: defaultdict(bool)) 
+    feature_activation_thresholds_met = defaultdict(bool) 
 
-    # Iterate through generations again to identify threshold-based events
-    for gen_num in range(1, latest_generation_number + 1):
-        if gen_num not in all_generation_data:
-            continue
+    # Iterate through fully checkpointed generations for these events
+    for gen_num in range(1, last_fully_checkpointed_gen_num + 1):
+        if gen_num not in all_generation_data: continue
         
-        current_gen_data = all_generation_data[gen_num]
-        current_gen_population = current_gen_data.get("population_state", [])
-        current_gen_timestamp = current_gen_data.get("timestamp_completed")
+        current_gen_data_for_events = all_generation_data[gen_num]
+        current_gen_population_for_events = current_gen_data_for_events.get("population_state", [])
+        current_gen_timestamp_for_events = current_gen_data_for_events.get("timestamp_completed")
 
         # Event: Lineage reached K members
-        lineage_counts_this_gen = Counter()
-        for agent_dict in current_gen_population:
-            progenitor_id = progenitor_map.get(agent_dict['agent_id'])
-            if progenitor_id:
-                lineage_counts_this_gen[progenitor_id] += 1
-        
-        for prog_id, count in lineage_counts_this_gen.items():
-            for threshold in LINEAGE_MEMBER_COUNT_THRESHOLDS:
-                if count >= threshold and not lineage_thresholds_met[prog_id][threshold]:
+        lineage_counts_this_gen_for_events = Counter()
+        for agent_dict_event_lm in current_gen_population_for_events:
+            progenitor_id_event_lm = progenitor_map.get(agent_dict_event_lm['agent_id'])
+            if progenitor_id_event_lm:
+                lineage_counts_this_gen_for_events[progenitor_id_event_lm] += 1
+        for prog_id_event_lm, count_event_lm in lineage_counts_this_gen_for_events.items():
+            for threshold_event_lm in LINEAGE_MEMBER_COUNT_THRESHOLDS:
+                if count_event_lm >= threshold_event_lm and not lineage_thresholds_met[prog_id_event_lm][threshold_event_lm]:
                     interesting_events.append({
-                        "generation": gen_num,
-                        "timestamp": current_gen_timestamp,
+                        "generation": gen_num, "timestamp": current_gen_timestamp_for_events,
                         "type": "Lineage Milestone",
-                        "description": f"Lineage of {get_agent_display_name(prog_id)} reached {count} members (threshold: {threshold})."
+                        "description": f"Lineage of {get_agent_display_name(prog_id_event_lm)} reached {count_event_lm} members (threshold: {threshold_event_lm})."
                     })
-                    lineage_thresholds_met[prog_id][threshold] = True # Mark as met for this lineage and threshold
+                    lineage_thresholds_met[prog_id_event_lm][threshold_event_lm] = True
 
         # Event: Feature average activation exceeded threshold
-        feature_activations_this_gen = defaultdict(list)
-        for agent_dict in current_gen_population:
-            genome = agent_dict.get("genome", {})
-            for f_uuid, f_data in genome.items():
-                act_val = f_data.get('activation') if isinstance(f_data, dict) else f_data
-                feature_activations_this_gen[f_uuid].append(act_val)
-        
-        for f_uuid, activations in feature_activations_this_gen.items():
-            if activations:
-                avg_activation = np.mean(activations)
-                if abs(avg_activation) >= FEATURE_AVG_ACTIVATION_THRESHOLD and not feature_activation_thresholds_met[f_uuid]:
-                    feature_label = all_active_features.get(f_uuid, f"UUID {f_uuid[:8]}")
+        feature_activations_this_gen_for_events = defaultdict(list)
+        for agent_dict_event_fm in current_gen_population_for_events:
+            genome_event_fm = agent_dict_event_fm.get("genome", {})
+            for f_uuid_event_fm, f_data_event_fm in genome_event_fm.items():
+                act_val_event_fm = f_data_event_fm.get('activation') if isinstance(f_data_event_fm, dict) else f_data_event_fm
+                feature_activations_this_gen_for_events[f_uuid_event_fm].append(act_val_event_fm)
+        for f_uuid_event_fm, activations_event_fm in feature_activations_this_gen_for_events.items():
+            if activations_event_fm: # Check if list is not empty
+                avg_activation_event_fm = np.mean(activations_event_fm)
+                if abs(avg_activation_event_fm) >= FEATURE_AVG_ACTIVATION_THRESHOLD and not feature_activation_thresholds_met[f_uuid_event_fm]:
+                    feature_label_event_fm = all_active_features.get(f_uuid_event_fm, f"UUID {f_uuid_event_fm[:8]}")
                     interesting_events.append({
-                        "generation": gen_num,
-                        "timestamp": current_gen_timestamp,
+                        "generation": gen_num, "timestamp": current_gen_timestamp_for_events,
                         "type": "Feature Milestone",
-                        "description": f"Feature '{get_feature_display_name(f_uuid, feature_label)}' average activation reached {avg_activation:.3f} (threshold: {FEATURE_AVG_ACTIVATION_THRESHOLD})."
+                        "description": f"Feature '{get_feature_display_name(f_uuid_event_fm, feature_label_event_fm)}' average activation reached {avg_activation_event_fm:.3f} (threshold: {FEATURE_AVG_ACTIVATION_THRESHOLD})."
                     })
-                    feature_activation_thresholds_met[f_uuid] = True # Mark as met for this feature
-
-    # Add Game Outcome events and Evolutionary Feature Update events
-    for gen_num in range(1, latest_generation_number + 1):
+                    feature_activation_thresholds_met[f_uuid_event_fm] = True
+        
         # Evolutionary Feature Update Events (from offspring in this generation)
-        if gen_num in all_generation_data:
-            gen_data_for_evo_events = all_generation_data[gen_num]
-            population_for_evo_events = gen_data_for_evo_events.get("population_state", [])
-            gen_timestamp_for_evo_events = gen_data_for_evo_events.get("timestamp_completed")
+        # These depend on 'evolutionary_input_positive_features' stored in the agent's state from generation_XXXX.json
+        for agent_dict_evo_event in current_gen_population_for_events:
+            agent_id_evo_event = agent_dict_evo_event.get('agent_id')
+            pos_features_evo_event = agent_dict_evo_event.get('evolutionary_input_positive_features', [])
+            neg_features_evo_event = agent_dict_evo_event.get('evolutionary_input_negative_features', [])
 
-            for agent_dict_evo in population_for_evo_events:
-                agent_id_evo = agent_dict_evo.get('agent_id')
-                pos_features = agent_dict_evo.get('evolutionary_input_positive_features', [])
-                neg_features = agent_dict_evo.get('evolutionary_input_negative_features', [])
+            if pos_features_evo_event:
+                top_feature_uuid_evo_pos = pos_features_evo_event[0] 
+                feature_label_evo_pos = all_active_features.get(top_feature_uuid_evo_pos, f"UUID {top_feature_uuid_evo_pos[:8]}")
+                interesting_events.append({
+                    "generation": gen_num, "timestamp": current_gen_timestamp_for_events,
+                    "type": "Feature Reinforced",
+                    "description": f"Agent {get_agent_display_name(agent_id_evo_event)}: Feature '{get_feature_display_name(top_feature_uuid_evo_pos, feature_label_evo_pos)}' reinforced (parent won)."
+                })
+            if neg_features_evo_event:
+                top_feature_uuid_evo_neg = neg_features_evo_event[0] 
+                feature_label_evo_neg = all_active_features.get(top_feature_uuid_evo_neg, f"UUID {top_feature_uuid_evo_neg[:8]}")
+                interesting_events.append({
+                    "generation": gen_num, "timestamp": current_gen_timestamp_for_events,
+                    "type": "Feature Suppressed",
+                    "description": f"Agent {get_agent_display_name(agent_id_evo_event)}: Feature '{get_feature_display_name(top_feature_uuid_evo_neg, feature_label_evo_neg)}' suppressed (parent lost)."
+                })
 
-                if pos_features:
-                    top_feature_uuid = pos_features[0] # Log the first one as representative
-                    feature_label = all_active_features.get(top_feature_uuid, f"UUID {top_feature_uuid[:8]}")
-                    interesting_events.append({
-                        "generation": gen_num,
-                        "timestamp": gen_timestamp_for_evo_events,
-                        "type": "Feature Reinforced",
-                        "description": f"Agent {get_agent_display_name(agent_id_evo)}: Feature '{get_feature_display_name(top_feature_uuid, feature_label)}' reinforced (parent won)."
-                    })
-                if neg_features:
-                    top_feature_uuid = neg_features[0] # Log the first one
-                    feature_label = all_active_features.get(top_feature_uuid, f"UUID {top_feature_uuid[:8]}")
-                    interesting_events.append({
-                        "generation": gen_num,
-                        "timestamp": gen_timestamp_for_evo_events,
-                        "type": "Feature Suppressed",
-                        "description": f"Agent {get_agent_display_name(agent_id_evo)}: Feature '{get_feature_display_name(top_feature_uuid, feature_label)}' suppressed (parent lost)."
-                    })
-
-        # Game Outcome Events
-        games_this_gen = load_games_for_generation_cached(run_id, gen_num, state_base_dir)
+    # --- Phase 2: Load game data (games_generation_XXXX.jsonl) and "Game Outcome" events ---
+    # First, load games for all fully checkpointed generations
+    for gen_num_games in range(1, last_fully_checkpointed_gen_num + 1):
+        games_this_gen = load_games_for_generation_cached(run_id, gen_num_games, state_base_dir)
         for game in games_this_gen:
             game_id_short = game.get("game_id", "UnknownGame")[:15]
             pA_id = game.get("player_A_id")
@@ -299,39 +314,99 @@ def load_full_run_data(run_id: str, state_base_dir: str):
             pB_role = game.get("player_B_game_role", "Role B")
             adj_result = game.get("adjudication_result", "Unknown")
             game_timestamp = game.get("timestamp_end", game.get("timestamp_start"))
-
             outcome_desc = "Unknown Outcome"
-            if adj_result == "Role A Wins":
-                outcome_desc = f"{pA_role} ({get_agent_display_name(pA_id)}) Wins vs {pB_role} ({get_agent_display_name(pB_id)})"
-            elif adj_result == "Role B Wins":
-                outcome_desc = f"{pB_role} ({get_agent_display_name(pB_id)}) Wins vs {pA_role} ({get_agent_display_name(pA_id)})"
-            elif "Tie" in adj_result: # Catches "Tie", "Tie (Defaulted)" etc.
-                outcome_desc = f"Tie between {pA_role} ({get_agent_display_name(pA_id)}) and {pB_role} ({get_agent_display_name(pB_id)})"
-            else: # Other results like errors
-                outcome_desc = f"Result: {adj_result} for {pA_role} ({get_agent_display_name(pA_id)}) vs {pB_role} ({get_agent_display_name(pB_id)})"
-
+            if adj_result == "Role A Wins": outcome_desc = f"{pA_role} ({get_agent_display_name(pA_id)}) Wins vs {pB_role} ({get_agent_display_name(pB_id)})"
+            elif adj_result == "Role B Wins": outcome_desc = f"{pB_role} ({get_agent_display_name(pB_id)}) Wins vs {pA_role} ({get_agent_display_name(pA_id)})"
+            elif "Tie" in adj_result: outcome_desc = f"Tie between {pA_role} ({get_agent_display_name(pA_id)}) and {pB_role} ({get_agent_display_name(pB_id)})"
+            else: outcome_desc = f"Result: {adj_result} for {pA_role} ({get_agent_display_name(pA_id)}) vs {pB_role} ({get_agent_display_name(pB_id)})"
             interesting_events.append({
-                "generation": gen_num,
-                "timestamp": game_timestamp,
-                "type": "Game Outcome",
-                "description": f"Game {game_id_short}...: {outcome_desc}"
+                "generation": gen_num_games, "timestamp": game_timestamp,
+                "type": "Game Outcome", "description": f"Game {game_id_short}...: {outcome_desc}"
             })
 
-    # Sort interesting events by generation then timestamp
+    # Attempt to load game data for the *next* (potentially in-progress) generation
+    in_progress_gen_candidate = last_fully_checkpointed_gen_num + 1
+    in_progress_games_file_path = base_path / f"games_generation_{in_progress_gen_candidate:04d}.jsonl"
+    
+    if in_progress_games_file_path.exists():
+        games_in_progress_gen = load_games_for_generation_cached(run_id, in_progress_gen_candidate, state_base_dir)
+        if games_in_progress_gen: # Check if the file actually contained games
+            for game_ip in games_in_progress_gen: # Use game_ip to avoid variable name collision
+                game_id_short_ip = game_ip.get("game_id", "UnknownGame")[:15]
+                pA_id_ip = game_ip.get("player_A_id")
+                pB_id_ip = game_ip.get("player_B_id")
+                pA_role_ip = game_ip.get("player_A_game_role", "Role A")
+                pB_role_ip = game_ip.get("player_B_game_role", "Role B")
+                adj_result_ip = game_ip.get("adjudication_result", "Unknown")
+                game_timestamp_ip = game_ip.get("timestamp_end", game_ip.get("timestamp_start"))
+                outcome_desc_ip = "Unknown Outcome"
+                if adj_result_ip == "Role A Wins": outcome_desc_ip = f"{pA_role_ip} ({get_agent_display_name(pA_id_ip)}) Wins vs {pB_role_ip} ({get_agent_display_name(pB_id_ip)})"
+                elif adj_result_ip == "Role B Wins": outcome_desc_ip = f"{pB_role_ip} ({get_agent_display_name(pB_id_ip)}) Wins vs {pA_role_ip} ({get_agent_display_name(pA_id_ip)})"
+                elif "Tie" in adj_result_ip: outcome_desc_ip = f"Tie between {pA_role_ip} ({get_agent_display_name(pA_id_ip)}) and {pB_role_ip} ({get_agent_display_name(pB_id_ip)})"
+                else: outcome_desc_ip = f"Result: {adj_result_ip} for {pA_role_ip} ({get_agent_display_name(pA_id_ip)}) vs {pB_role_ip} ({get_agent_display_name(pB_id_ip)})"
+                interesting_events.append({
+                    "generation": in_progress_gen_candidate, "timestamp": game_timestamp_ip,
+                    "type": "Game Outcome", "description": f"Game {game_id_short_ip}...: {outcome_desc_ip}"
+                })
+            
+            max_gen_for_dashboard_display = in_progress_gen_candidate # Update if in-progress games found
+            st.sidebar.info(f"Showing games from in-progress generation {in_progress_gen_candidate}.")
+            
+            # Add a synthetic entry to generation_summary_list for the in-progress generation
+            # This helps charts extend to this generation, even if most metrics are NaN.
+            # Check if an entry for this generation doesn't already exist from a full load (unlikely but safe).
+            if not any(s["generation_number"] == in_progress_gen_candidate for s in generation_summary_list):
+                generation_summary_list.append({
+                    "generation_number": in_progress_gen_candidate,
+                    "timestamp_completed": None, # This generation is not fully completed
+                    "total_games_played_in_generation": len(games_in_progress_gen)
+                    # Other metrics like avg_fitness, avg_wealth, etc., will be missing/NaN
+                })
+            # Rebuild DataFrame to include the in-progress generation's game count
+            generation_summary_df = pd.DataFrame(generation_summary_list)
+            for col in numeric_cols_for_summary_df: # Re-apply numeric conversion
+                if col in generation_summary_df.columns:
+                    generation_summary_df[col] = pd.to_numeric(generation_summary_df[col], errors='coerce')
+
+    # Sort all collected interesting events by generation then timestamp
     interesting_events.sort(key=lambda x: (x["generation"], x.get("timestamp", "")))
 
+    # If no data at all was found (e.g., empty state directory or brand new run with no files yet)
+    if max_gen_for_dashboard_display == 0 and not (base_path / f"games_generation_{1:04d}.jsonl").exists():
+        st.warning(f"No generation data (neither full checkpoints nor game files) found for run '{run_id}'. The simulation may not have started or no data has been saved yet.")
+        # Return a structure that allows the dashboard to load without breaking,
+        # but indicates no data.
+        return {
+            "config_snapshot": config_snapshot, # config_snapshot is loaded earlier, should be present
+            "latest_generation_number": 0,
+            "all_generation_data": {},
+            "all_agents_by_id": {},
+            "lineages": {},
+            "progenitor_map": {},
+            "all_active_features": {},
+            "generation_summary_df": pd.DataFrame(),
+            "interesting_events": []
+        }
 
     return {
         "config_snapshot": config_snapshot,
-        "latest_generation_number": latest_generation_number,
-        "all_generation_data": all_generation_data,
-        "all_agents_by_id": dict(all_agents_by_id), # Convert defaultdict to dict
+        "latest_generation_number": max_gen_for_dashboard_display, # This is the highest gen with *any* data
+        "all_generation_data": all_generation_data, # Contains full state up to last_fully_checkpointed_gen_num
+        "all_agents_by_id": dict(all_agents_by_id), 
         "lineages": lineages,
         "progenitor_map": progenitor_map,
         "all_active_features": all_active_features,
-        "generation_summary_df": generation_summary_df,
+        "generation_summary_df": generation_summary_df, # May include a row for in-progress gen
         "interesting_events": interesting_events
     }
+
+
+
+
+
+
+
+
 
 @st.cache_data(ttl=60)
 def load_games_for_generation_cached(run_id: str, generation_number: int, state_base_dir: str) -> list[dict]:
@@ -525,10 +600,10 @@ def create_nav_button(label, target_tab, nav_state_key, nav_state_value, params=
         nav_state_key (str): The session state key to update with nav_state_value (e.g., 'nav_to_agent_id').
         nav_state_value (any): The value to set for nav_state_key (e.g., an agent ID).
         params (dict, optional): Additional key-value pairs to set in st.session_state. Defaults to None.
-        key_suffix (str, optional): A suffix to append to the button's generated key to ensure uniqueness
+        key_suffix (str, optional): A suffix to append to the button's generated key for uniqueness
                                     if multiple buttons might otherwise have the same base key. Defaults to None.
     """
-    # Ensure components of the key are strings for reliable key generation.
+    # components of the key are strings for reliable key generation.
     str_nav_state_key = str(nav_state_key)
     str_nav_state_value = str(nav_state_value)
     str_target_tab = str(target_tab)
@@ -1481,7 +1556,7 @@ with tab_container_map["📜 Game Viewer"]:
                     default_tie_reason = game_to_display.get("defaulted_to_tie_reason")
                     betting_details = game_to_display.get("betting_details")
 
-                    st.metric("Adjudication Result", str(adj_result)) # Ensure it's a string
+                    st.metric("Adjudication Result", str(adj_result)) # it's a string
 
                     if default_tie_reason:
                         st.caption(f"Note on Outcome: {default_tie_reason}")
