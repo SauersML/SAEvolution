@@ -450,20 +450,27 @@ def apply_algorithmic_genome_update(
     return offspring_genome
 
 
-def evolve_population(population: list[Agent], fitness_scores: list[float], config: dict) -> list[Agent]:
+def evolve_population(
+    population: list[Agent], 
+    fitness_scores: list[float], 
+    config: dict,
+    all_games_this_generation: list[dict] # New parameter
+) -> list[Agent]:
     """
     Evolves the population to create a new generation of agents.
     This involves parent selection and genome modification for offspring using feature inspection.
+    Args:
+        population: The current population of agents.
+        fitness_scores: Fitness scores for the current population.
+        config: The simulation configuration dictionary.
+        all_games_this_generation: A list of all game detail dictionaries from the current generation.
     """
-    if not isinstance(population, list) or not isinstance(fitness_scores, list) or not isinstance(config, dict):
+    if not isinstance(population, list) or \
+       not isinstance(fitness_scores, list) or \
+       not isinstance(config, dict) or \
+       not isinstance(all_games_this_generation, list):
         logging.error("evolve_population: Invalid arguments.")
         return copy.deepcopy(population) if isinstance(population, list) else []
-    if not population:
-        logging.warning("evolve_population: Cannot evolve an empty population.")
-        return []
-    if len(population) != len(fitness_scores):
-        logging.error("evolve_population: Population size and fitness_scores length mismatch.")
-        return copy.deepcopy(population)
 
     population_size = len(population)
     new_population: list[Agent] = []
