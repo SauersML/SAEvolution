@@ -94,7 +94,7 @@ generation:
 
       {role} (Respond according to your role and objective):
     max_tokens: 1000
-    temperature: 0.6
+    temperature: 0.7
 
 adjudicator:
   model_id: 'meta-llama/Llama-3.3-70B-Instruct' # Model used for both adjudication calls
@@ -125,7 +125,7 @@ adjudicator:
 
     Your response will be ONLY the <scratchpad> XML tag and its content. Start your response with the <scratchpad> tag now.
   max_tokens_scratchpad: 2500 # Max tokens for the scratchpad call
-  temperature_scratchpad: 0.0 # Temperature for the scratchpad call
+  temperature_scratchpad: 0.7 # Temperature for the scratchpad call
 
   # Prompt for the second adjudication call (Outcome and Message IDs)
   prompt_template_outcome_ids: |
