@@ -77,13 +77,15 @@ generation:
 adjudicator:
   model_id: 'meta-llama/Llama-3.3-70B-Instruct'
   prompt_template: |
-      Analyze the interaction based strictly on the rules and objectives defined in the scenario description.
+      Analyze the interaction based on the rules and objectives defined in the scenario description.
 
       Scenario Description:
       {scenario}
 
       Interaction Transcript:
       {transcript}
+
+      Note: assign ties only when the scenario and game context is very evenly matched with no possible way to decide a winner. If one role is doing better, assign it to win.
 
       Task: Based ONLY on the scenario's win criteria and the interaction, determine the outcome. Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.
   max_tokens: 20
