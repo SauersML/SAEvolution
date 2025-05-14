@@ -182,12 +182,27 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     final_prompt_text = f"{prompt_text_template}\n[{diversification_seed}]"
 
     variant = goodfire.Variant(model_id)
-    variant_edits = proposer_agent.genome
-    if isinstance(variant_edits, dict) and variant_edits:
+    raw_genome_from_proposer = proposer_agent.genome
+    genome_for_goodfire_api = {}
+    # Transform the agent's genome (dict of dicts) to the flat dict expected by goodfire.Variant().set()
+    if isinstance(raw_genome_from_proposer, dict):
+        for feature_uuid, feature_data_dict in raw_genome_from_proposer.items():
+            if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
+                # New genome format: {'activation': float, 'label': str}
+                genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
+            elif isinstance(feature_data_dict, (int, float)):
+                # This case might occur if loading very old data or if there's mixed format.
+                logging.debug(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario appears to be in old format (direct activation value). Using it directly.")
+                genome_for_goodfire_api[feature_uuid] = float(feature_data_dict)
+            else:
+                logging.warning(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario has unexpected structure: {feature_data_dict}. Skipping this feature for Goodfire variant.")
+
+    if genome_for_goodfire_api: # Check if the transformed genome has any features to set
         try:
-            variant.set(variant_edits)
+            variant.set(genome_for_goodfire_api)
         except Exception as e:
-            logging.error(f"Error setting variant edits for agent {proposer_agent.agent_id} in generate_scenario: {e}", exc_info=True)
+            # Log error specific to setting the transformed genome
+            logging.error(f"Error setting transformed variant edits for agent {proposer_agent.agent_id} in generate_scenario: {e}", exc_info=True)
 
     messages = [{"role": "user", "content": final_prompt_text}]
     llm_raw_output_text = None 
@@ -394,13 +409,27 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         return None, prompt_template # Return template itself if formatting fails
 
     variant = goodfire.Variant(model_id)
-    variant_edits = agent.genome
-    if isinstance(variant_edits, dict) and variant_edits:
-        try:
-            variant.set(variant_edits)
-        except Exception as e:
-            logging.error(f"Error setting variant edits for agent {agent.agent_id} during response generation: {e}", exc_info=True)
+    raw_genome_from_agent = agent.genome
+    genome_for_goodfire_api = {}
+    # Transform the agent's genome (dict of dicts) to the flat dict expected by goodfire.Variant().set()
+    if isinstance(raw_genome_from_agent, dict):
+        for feature_uuid, feature_data_dict in raw_genome_from_agent.items():
+            if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
+                # New genome format: {'activation': float, 'label': str}
+                genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
+            elif isinstance(feature_data_dict, (int, float)):
+                # Fallback for potential old genome format: float activation value
+                logging.debug(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response appears to be in old format. Using it directly.")
+                genome_for_goodfire_api[feature_uuid] = float(feature_data_dict)
+            else:
+                logging.warning(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response has unexpected structure: {feature_data_dict}. Skipping.")
 
+    if genome_for_goodfire_api: # Check if the transformed genome has any features to set
+        try:
+            variant.set(genome_for_goodfire_api)
+        except Exception as e:
+            logging.error(f"Error setting transformed variant edits for agent {agent.agent_id} during response generation: {e}", exc_info=True)
+            
     messages = [{"role": "user", "content": prompt_text_for_llm}]
 
     try:
@@ -573,15 +602,30 @@ def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant
     if isinstance(agent_variant_or_model_id, Agent):
         agent_id_for_log = agent_variant_or_model_id.agent_id
         variant = goodfire.Variant(agent_variant_or_model_id.model_id)
-        if isinstance(agent_variant_or_model_id.genome, dict) and agent_variant_or_model_id.genome:
+        raw_genome_for_contrast = agent_variant_or_model_id.genome
+        genome_for_goodfire_api_contrast = {}
+        # Transform the agent's genome for Goodfire API
+        if isinstance(raw_genome_for_contrast, dict):
+            for feature_uuid, feature_data_dict in raw_genome_for_contrast.items():
+                if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
+                    genome_for_goodfire_api_contrast[feature_uuid] = feature_data_dict['activation']
+                elif isinstance(feature_data_dict, (int, float)):
+                    logging.debug(f"Agent {agent_id_for_log} genome for feature {feature_uuid} in perform_contrastive_analysis (Agent type) appears to be in old format. Using it directly.")
+                    genome_for_goodfire_api_contrast[feature_uuid] = float(feature_data_dict)
+                else:
+                    logging.warning(f"Agent {agent_id_for_log} genome for feature {feature_uuid} in perform_contrastive_analysis (Agent type) has unexpected structure: {feature_data_dict}. Skipping.")
+
+        if genome_for_goodfire_api_contrast: # If there are valid edits
             try:
-                variant.set(agent_variant_or_model_id.genome)
-                model_arg = variant
+                variant.set(genome_for_goodfire_api_contrast)
+                model_arg = variant # Use the variant with edits
             except Exception as e:
-                logging.error(f"Error setting variant edits for contrast analysis on agent {agent_id_for_log}: {e}. Using base model ID.")
-                model_arg = agent_variant_or_model_id.model_id # Fallback to base model ID string
+                logging.error(f"Error setting transformed variant edits for contrast analysis on agent {agent_id_for_log}: {e}. Using base model ID as fallback.")
+                model_arg = agent_variant_or_model_id.model_id # Fallback to base model ID string if set fails
         else:
-             model_arg = variant # Use variant even if genome is empty (it represents the base model)
+             # No genome edits to apply, or genome was empty/invalid.
+             # Use the un-edited variant (which represents the base model)
+             model_arg = variant
     elif isinstance(agent_variant_or_model_id, str):
          model_arg = agent_variant_or_model_id
          agent_id_for_log = f"model_id: {agent_variant_or_model_id}"
