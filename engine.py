@@ -13,6 +13,8 @@ import logging
 import copy
 import datetime
 import uuid # For unique game IDs
+from pathlib import Path # For path manipulation
+import json # For writing JSON
 from manager import Agent
 from interface import generate_scenario, generate_agent_response, adjudicate_interaction
 
@@ -387,6 +389,42 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
         game_details_dict["final_player_A_wealth"] = agent1.wealth
         game_details_dict["final_player_B_wealth"] = agent2.wealth
         logging.info(f"Game {game_id}: Finished. Final wealth A:{agent1.wealth:.2f}, B:{agent2.wealth:.2f}. Adjudication: {game_details_dict['adjudication_result']}")
+        
+        # Persist this single game's details incrementally after it's fully finalized.
+        # This allows the dashboard to pick it up if it's looking at the right file.
+        try:
+            # Retrieve state_base_dir from the passed config object
+            state_base_dir_from_config = config.get('state_saving', {}).get('directory', 'simulation_state')
+            if not isinstance(run_id, str) or not run_id: # Ensure run_id is valid string
+                logging.error(f"Game {game_id}: Invalid or missing run_id ('{run_id}') for live data persistence. Skipping.")
+            else:
+                run_dir_path_in_engine = Path(state_base_dir_from_config) / run_id
+                run_dir_path_in_engine.mkdir(parents=True, exist_ok=True) # Ensure run directory exists
+
+                # 1. Append to the current generation's game log file
+                # The generation_number is passed into _play_single_game
+                games_data_filename_live = run_dir_path_in_engine / f"games_generation_{generation_number:04d}.jsonl"
+                try:
+                    with open(games_data_filename_live, 'a') as f: # Open in append mode
+                        f.write(json.dumps(game_details_dict) + '\n')
+                    logging.debug(f"Game {game_id}: Appended live game detail to {games_data_filename_live}")
+                except Exception as e_append:
+                    logging.error(f"Game {game_id}: Failed to append live game detail to {games_data_filename_live}: {e_append}")
+
+                # 2. Update _latest_generation_number.txt to ensure the current generation is "visible"
+                #    to the dashboard. This write ensures the dashboard knows the current generation_number is active.
+                latest_gen_tracker_path_live = run_dir_path_in_engine / "_latest_generation_number.txt"
+                try:
+                    # It's generally safe to just write the current generation number.
+                    # If multiple games finish nearly simultaneously, they'll all write the same current gen number.
+                    # The dashboard will read this file on its refresh cycle.
+                    with open(latest_gen_tracker_path_live, 'w') as f:
+                        f.write(str(generation_number))
+                    logging.debug(f"Game {game_id}: Updated _latest_generation_number.txt to {generation_number} for live dashboard view.")
+                except Exception as e_tracker:
+                    logging.error(f"Game {game_id}: Failed to update _latest_generation_number.txt for live view: {e_tracker}")
+        except Exception as e_live_persist_outer:
+            logging.error(f"Game {game_id}: Outer error during live data persistence: {e_live_persist_outer}", exc_info=True)
         
     return game_details_dict
 
