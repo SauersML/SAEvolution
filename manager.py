@@ -560,9 +560,9 @@ def evolve_population(
                             original_role = turn.get('role')
                             content = turn.get('content')
                             if original_role == parent_actual_game_role:
-                                transformed_messages_for_inspect.append({\"role\": \"assistant\", \"content\": content})
+                                transformed_messages_for_inspect.append({"role": "assistant", "content": content})
                             else: # Opponent's turn
-                                transformed_messages_for_inspect.append({\"role\": \"user\", \"content\": content})
+                                transformed_messages_for_inspect.append({"role": "user", "content": content})
                         logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Transformed transcript for inspect. Parent was {parent_actual_game_role}. First new message: {transformed_messages_for_inspect[0] if transformed_messages_for_inspect else 'N/A'}")
                     else:
                         logging.warning(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Could not determine parent's specific role in the game from game details. Cannot transform transcript for inspect. Game Details: PlayerA ID: {full_game_details_for_parent.get('player_A_id')}, PlayerB ID: {full_game_details_for_parent.get('player_B_id')}")
