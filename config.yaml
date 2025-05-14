@@ -97,69 +97,83 @@ generation:
     temperature: 0.6
 
 adjudicator:
-  model_id: 'meta-llama/Llama-3.3-70B-Instruct'
-  prompt_template: |
-      Analyze the interaction based on the rules and objectives defined in the scenario description.
-      The Interaction Transcript will label each message with an identifier like "A1" (Role A's first message), "B1" (Role B's first message), "A2", etc.
+  model_id: 'meta-llama/Llama-3.3-70B-Instruct' # Model used for both adjudication calls
+  # Prompt for the first adjudication call (Scratchpad Generation)
+  prompt_template_scratchpad: |
+    Analyze the interaction based on the rules and objectives defined in the scenario description.
+    The Interaction Transcript will label each message with an identifier like "A1" (Role A's first message), "B1" (Role B's first message), "A2", etc.
 
-      The contents of your reply should be contained within XML tags, so begin your response with the first XML opening tag ("<scratchpad>").
+    Your task is to provide a detailed step-by-step thought process for adjudicating this game.
+    The contents of your reply should be contained ONLY within a single <scratchpad> XML tag.
 
-      Your analysis should proceed in three steps, with XML tags for each:
+    Inside the <scratchpad> tag:
+    - Think step-by-step about the game flow, key moments, and how each player's actions related to the win criteria and objectives.
+    - Identify which role achieved its objectives or better met the win criteria, even if the objectives were not fully achieved by anyone.
+    - If a winner is clear, identify the single message from the WINNING role that was most pivotal or representative of their win.
+    - Also, identify the single message from the LOSING role that was most pivotal or representative of their loss or a key mistake.
+    - If it's a Tie, you do not need to identify win/loss messages.
+    - If there is any signal or lean as to who is doing better, you should assign a win instead of a tie.
+    - Note: assign ties only when the scenario and game context is very evenly matched with no possible way to decide a winner. If one role is doing better, assign it to win.
 
-      1. <scratchpad>
-         Think step-by-step here about the game flow, key moments, and how each player's actions related to the win criteria and objectives.
-         Identify which role, achieved its objectives or better met the win criteria, even if the objectives were not achieved.
-         If a winner is clear, identify the single message from the WINNING role that was most pivotal or representative of their win.
-         Also, identify the single message from the LOSING role that was most pivotal or representative of their loss or a key mistake.
-         If it's a Tie, you do not need to identify win/loss messages. If there is any signal or lean as to who is doing better, you should assign a win instead of a tie.
-         Note: assign ties only when the scenario and game context is very evenly matched with no possible way to decide a winner. If one role is doing better, assign it to win.
-         You may also plan how to give the other responses using the XML tags as described.
-      </scratchpad>
+    Scenario Description:
+    {scenario}
 
-      2. <outcome>
-         Based on your analysis of the interaction, determine the outcome. Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.
-      </outcome>
+    Interaction Transcript (with message identifiers):
+    [Beginning of game transcript]
+    {transcript_with_ids}
+    [End of game transcript]
 
-      3. If there is a winner and loser (i.e., not a 'Tie'):
-         <win_message_id>[WINNER_MSG_ID]</win_message_id>
-         <lose_message_id>[LOSER_MSG_ID]</lose_message_id>
-         
-         Replace [WINNER_MSG_ID] with the message identifier of the winner's most critical message leading to or responsible for the win.
-         Replace [LOSER_MSG_ID] with the message identifier of the loser's message which most contributed to the loss.
+    Your response will be ONLY the <scratchpad> XML tag and its content. Start your response with the <scratchpad> tag now.
+  max_tokens_scratchpad: 2500 # Max tokens for the scratchpad call
+  temperature_scratchpad: 0.0 # Temperature for the scratchpad call
 
-         There must be only one message ID inside each of the two tags.
+  # Prompt for the second adjudication call (Outcome and Message IDs)
+  prompt_template_outcome_ids: |
+    You will be provided with a Scenario Description, an Interaction Transcript, and a Scratchpad Analysis from a previous analytical step.
+    Your task is to determine the final outcome of the game and identify critical messages, following the reasoning presented in the Scratchpad Analysis.
+    The Interaction Transcript will label each message with an identifier like "A1", "B1", "A2", etc.
 
-         Outcome MUST be ONLY ONE of these options, verbatim: 1. <outcome>Role A Wins</outcome>, 2. <outcome>Role B Wins</outcome>, or 3. <outcome>Tie</outcome>
-         You must refer to the roles as "Role A" and "Role B" and not as any other names.
-        
-         If the outcome is 'Tie', you can omit these tags.
+    Your entire response MUST be in XML format, containing the following tags in sequence:
 
-      Scenario Description:
-      {scenario}
+    1. <outcome>
+       Based SOLELY on the provided Scratchpad Analysis, determine the outcome.
+       Respond with ONLY ONE of the following exact phrases: 'Role A Wins', 'Role B Wins', or 'Tie'.
+       Do NOT provide any explanation or rationale within this tag. Your job is to choose which of the three to pick based on the scratchpad.
+    </outcome>
 
-      Interaction Transcript (with message identifiers):
-      [Beginning of game transcript]
-      {transcript_with_ids}
-      [End of game transcript]
+    2. If the Scratchpad Analysis indicates a winner and loser (i.e., outcome is not 'Tie'):
+       <win_message_id>[WINNER_MSG_ID]</win_message_id>
+       <lose_message_id>[LOSER_MSG_ID]</lose_message_id>
+       
+       Replace [WINNER_MSG_ID] with the message identifier (e.g., A1, B2) of the winner's most critical message, AS IDENTIFIED IN THE SCRATCHPAD ANALYSIS.
+       Replace [LOSER_MSG_ID] with the message identifier (e.g., B3, A2) of the loser's message most contributing to the loss, AS IDENTIFIED IN THE SCRATCHPAD ANALYSIS.
+       There must be only one message ID (two characters: letter A or B, followed by a digit 1, 2, or 3) inside each of these two tags.
+       Do not describe the messages or give reasoning here; defer to the scratchpad.
+       If the outcome is 'Tie' (based on scratchpad), omit the <win_message_id> and <lose_message_id> tags.
 
-      Provide your full response using the XML tags as described.
+    You must refer to the roles as "Role A" and "Role B".
+    If the game is unfinished, judge based on the scratchpad's assessment.
+    Your task is to analyze the provided game data and scratchpad, not to continue the game or re-evaluate from scratch.
 
-      Your task is to analyze the provided game transcript and scenario, not to continue the game.
+    Scratchpad Analysis (from previous step):
+    [Beginning of scratchpad analysis]
+    {scratchpad_analysis}
+    [End of scratchpad analysis]
 
-      If the game is unfinished, do your best to judge anyway.
+    Scenario Description:
+    {scenario}
 
-      Your response will be in this format: <scratchpad> ... </scratchpad> <outcome> ... </outcome> <win_message_id> ... </win_message_id> <lose_message_id> ... </lose_message_id>
+    Interaction Transcript (with message identifiers):
+    [Beginning of game transcript]
+    {transcript_with_ids}
+    [End of game transcript]
 
-      win_message_id and lose_message_id must each contain two characters only within the tags. This is because the messages IDs are only two characters.
+    Recall: complete the outcome and message ID sections now, and assign "Role A" or "Role B" to be the winner if possible. Then, indicate which message ID from the winning role contributed most to the win, and which message ID from the losing role contributed most to the loss.
+    Message IDs should not contain descriptions or reasoning.
 
-      1. scratchpad can have any content you want.
-      2. outcome is extremely strict in must have only ONE of the three possible options. Your job is to choose which of the three to pick. Do NOT give any rational or explanation here.
-      3. win_message_id and lose_message_id must be one of the following: A1, A2, A3, B1, B2, or B3. This is strict: do not describe the messages or give reasoning here.
-      
-      Provide your full response using the XML tags as described. Start your response with the <scratchpad> tag now. Then, write the <outcome> tag. Finally, provide the two tags for the winning and losing message_id.
-      
-  max_tokens: 5000
-  temperature: 0.0
+    Provide your full response using ONLY the XML tags as described. Start your response with the <outcome> tag first.
+  max_tokens_outcome_ids: 5000  # Max tokens for the outcome/IDs call
+  temperature_outcome_ids: 0.7 # Temperature for the outcome/IDs call
 
 logging:
   log_level: DEBUG # Logging verbosity. Options: DEBUG, INFO, WARNING, ERROR, CRITICAL.
