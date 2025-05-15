@@ -620,70 +620,162 @@ def create_nav_button(label, target_tab, nav_state_key, nav_state_value, params=
 # --- 📈 Overview Tab ---
 with tab_container_map["📈 Overview"]:
     st.header(f"Run Overview: {st.session_state.selected_run_id}")
-    col_overview1, col_overview2 = st.columns(2)
-    with col_overview1:
+
+    # Display configuration snapshot and key generation metrics
+    col_overview_info1, col_overview_info2 = st.columns([2,1]) 
+    with col_overview_info1:
         if config_snapshot:
             with st.expander("Simulation Configuration Snapshot", expanded=False):
                 st.json(config_snapshot)
-    with col_overview2:
-        st.metric("Generations Completed", latest_gen_num if latest_gen_num is not None else "N/A")
+        else:
+            st.caption("No configuration snapshot available for this run.")
+            
+    with col_overview_info2:
+        st.metric("Generations with Full Data", 
+                  max_fully_checkpointed_generation if max_fully_checkpointed_generation is not None else "N/A",
+                  help="Number of generations for which full population state (genomes, fitness, etc.) is saved and used for detailed plots.")
+        st.metric("Latest Generation with Any Data", 
+                  latest_gen_num if latest_gen_num is not None else "N/A",
+                  help="Highest generation number for which any data (full state or game logs) exists. Game logs might extend beyond 'Generations with Full Data'.")
 
+    st.markdown("---") # Visual separator
+
+    # --- Retained Plots: Fitness and Unique Genomes ---
     if not generation_summary_df.empty:
-        st.subheader("Performance Curves Over Generations")
-        plot_cols = st.columns(2)
-        with plot_cols[0]:
+        st.subheader("Population Summary Curves Over Generations")
+        plot_cols_retained = st.columns(2)
+        with plot_cols_retained[0]:
             st.markdown("##### Fitness Metrics (Avg, Min, Max)")
             fitness_metrics = ["avg_fitness", "min_fitness", "max_fitness"]
             avail_fit_metrics = [m for m in fitness_metrics if m in generation_summary_df.columns and generation_summary_df[m].notna().any()]
             if avail_fit_metrics:
-                df_melt = generation_summary_df[["generation_number"] + avail_fit_metrics].melt(
+                # Filter DataFrame for generations up to max_fully_checkpointed_generation for these metrics
+                df_fitness_plot_data = generation_summary_df[generation_summary_df["generation_number"] <= max_fully_checkpointed_generation]
+                df_melt_fitness = df_fitness_plot_data[["generation_number"] + avail_fit_metrics].melt(
                     "generation_number", var_name="Metric", value_name="Fitness"
                 ).dropna()
-                if not df_melt.empty:
-                    chart = alt.Chart(df_melt).mark_line(point=True).encode(
+                if not df_melt_fitness.empty:
+                    fitness_chart = alt.Chart(df_melt_fitness).mark_line(point=True).encode(
                         x=alt.X("generation_number:Q", title="Generation"),
                         y=alt.Y("Fitness:Q", scale=alt.Scale(zero=False)),
                         color="Metric:N",
                         tooltip=["generation_number", "Metric", alt.Tooltip("Fitness:Q", format=".3f")]
                     ).interactive()
-                    st.altair_chart(chart, use_container_width=True)
-        with plot_cols[1]:
-            st.markdown("##### Average Wealth")
-            if "avg_wealth" in generation_summary_df.columns and generation_summary_df["avg_wealth"].notna().any():
-                df_plot = generation_summary_df[["generation_number", "avg_wealth"]].dropna()
-                if not df_plot.empty:
-                    chart = alt.Chart(df_plot).mark_line(point=True).encode(
-                        x=alt.X("generation_number:Q", title="Generation"),
-                        y=alt.Y("avg_wealth:Q", title="Average Wealth", scale=alt.Scale(zero=False)),
-                        tooltip=["generation_number", alt.Tooltip("avg_wealth:Q", format=".2f")]
-                    ).interactive()
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(fitness_chart, use_container_width=True)
+                else:
+                    st.caption("No fitness data available for plotting.")
+            else:
+                st.caption("Fitness metrics not found in summary data.")
 
-        plot_cols2 = st.columns(2)
-        with plot_cols2[0]:
-            st.markdown("##### Games Played per Generation")
-            if "total_games_played_in_generation" in generation_summary_df.columns and generation_summary_df["total_games_played_in_generation"].notna().any():
-                df_plot = generation_summary_df[["generation_number", "total_games_played_in_generation"]].dropna()
-                if not df_plot.empty:
-                    chart = alt.Chart(df_plot).mark_bar().encode(
-                        x=alt.X("generation_number:Q", title="Generation", bin=alt.Bin(maxbins=max(10, latest_gen_num // 5 if latest_gen_num else 10))),
-                        y=alt.Y("total_games_played_in_generation:Q", title="Games Played"),
-                        tooltip=["generation_number", "total_games_played_in_generation"]
-                    ).interactive()
-                    st.altair_chart(chart, use_container_width=True)
-        with plot_cols2[1]:
+        with plot_cols_retained[1]:
             st.markdown("##### Unique Genomes (Approx.)")
             if "unique_genomes_approx" in generation_summary_df.columns and generation_summary_df["unique_genomes_approx"].notna().any():
-                df_plot = generation_summary_df[["generation_number", "unique_genomes_approx"]].dropna()
-                if not df_plot.empty:
-                    chart = alt.Chart(df_plot).mark_line(point=True).encode(
+                # Filter DataFrame for generations up to max_fully_checkpointed_generation
+                df_genomes_plot_data = generation_summary_df[generation_summary_df["generation_number"] <= max_fully_checkpointed_generation]
+                df_plot_genomes = df_genomes_plot_data[["generation_number", "unique_genomes_approx"]].dropna()
+                if not df_plot_genomes.empty:
+                    genomes_chart = alt.Chart(df_plot_genomes).mark_line(point=True).encode(
                         x=alt.X("generation_number:Q", title="Generation"),
                         y=alt.Y("unique_genomes_approx:Q", title="Unique Genomes (Approx.)"),
                         tooltip=["generation_number", "unique_genomes_approx"]
                     ).interactive()
-                    st.altair_chart(chart, use_container_width=True)
+                    st.altair_chart(genomes_chart, use_container_width=True)
+                else:
+                    st.caption("No unique genomes data available for plotting.")
+            else:
+                st.caption("Unique genomes data not found in summary.")
     else:
-        st.info("No generation summary data available for plotting curves.")
+        st.info("No generation summary data available for plotting population curves.")
+
+    st.markdown("---") # Visual separator
+
+    # --- All Feature Activation Trends ---
+    st.subheader("Average Activation Trends for All Features")
+    
+    all_features_trend_data_overview = []
+    if max_fully_checkpointed_generation > 0 and all_active_features:
+        for gen_num_trend_o in range(1, max_fully_checkpointed_generation + 1):
+            if gen_num_trend_o in all_gen_data: # Data for this fully_checkpointed generation
+                current_gen_pop_state_o = all_gen_data[gen_num_trend_o].get("population_state", [])
+                if not current_gen_pop_state_o:
+                    continue # Skip if no population data for this generation
+
+                # Calculate average activation for each feature in this generation's population
+                feature_activations_in_gen_o = defaultdict(list)
+                for agent_data_o in current_gen_pop_state_o:
+                    genome_o = agent_data_o.get("genome", {})
+                    for f_uuid_o, f_details_o in genome_o.items():
+                        # Ensure activation value is extracted correctly from modern or older genome format
+                        if isinstance(f_details_o, dict):
+                            activation_o = f_details_o.get('activation', 0.0)
+                        else: # Older format: direct activation value
+                            activation_o = f_details_o
+                        feature_activations_in_gen_o[f_uuid_o].append(float(activation_o))
+                
+                for f_uuid_o, activations_list_o in feature_activations_in_gen_o.items():
+                    if activations_list_o: # Only if the feature was present and had activations
+                        avg_activation_o = np.mean(activations_list_o)
+                        # Use the globally loaded all_active_features to get display names
+                        feature_label_o = get_feature_display_name(f_uuid_o, all_active_features.get(f_uuid_o))
+                        all_features_trend_data_overview.append({
+                            "generation": gen_num_trend_o,
+                            "feature_uuid": f_uuid_o,
+                            "feature_label": feature_label_o, 
+                            "avg_activation": avg_activation_o
+                        })
+    
+    if all_features_trend_data_overview:
+        df_all_features_trends = pd.DataFrame(all_features_trend_data_overview)
+        
+        # Sorting feature labels for consistent color mapping if desired, though Altair handles it.
+        # For very many features, legend might be an issue. Tooltip is primary.
+        all_features_chart = alt.Chart(df_all_features_trends).mark_line(point=True).encode(
+            x=alt.X("generation:Q", title="Generation"),
+            y=alt.Y("avg_activation:Q", title="Average Activation Strength", scale=alt.Scale(zero=False)),
+            color=alt.Color("feature_label:N", title="Feature", legend=alt.Legend(columns=2, symbolLimit=0) if len(all_active_features) > 20 else alt.Legend(symbolLimit=0)), # Adjust legend based on count
+            tooltip=[
+                alt.Tooltip("generation:Q", title="Generation"),
+                alt.Tooltip("feature_label:N", title="Feature"),
+                alt.Tooltip("avg_activation:Q", title="Avg. Activation", format=".4f"),
+                alt.Tooltip("feature_uuid:N", title="UUID")
+            ]
+        ).properties(
+            title="Average Activation Trends for All Features",
+            height=600 # Make the plot "BIG"
+        ).interactive()
+        st.altair_chart(all_features_chart, use_container_width=True)
+    elif max_fully_checkpointed_generation == 0:
+        st.info("No fully checkpointed generation data available to plot feature activation trends.")
+    elif not all_active_features:
+        st.info("No active features found in the simulation data to plot trends.")
+    else: # Data exists, but list might be empty due to other reasons (e.g., no genomes in populations)
+        st.caption("Insufficient data to generate feature activation trends. This might occur if populations had no agents or genomes.")
+
+    st.markdown("---") # Visual separator
+
+    # --- Complete List of All Active Features ---
+    with st.expander("Complete List of All Active Features Observed in the Run", expanded=False):
+        if all_active_features:
+            # Sort features by label for display
+            sorted_features_list = sorted(all_active_features.items(), key=lambda item: item[1])
+            
+            feature_list_display_data = []
+            for f_uuid, label in sorted_features_list:
+                feature_list_display_data.append({
+                    "Feature Label": label if label and label.strip() else f"Feature (Label N/A, UUID: {f_uuid[:8]}...)",
+                    "UUID": f_uuid
+                })
+            
+            if feature_list_display_data:
+                df_feature_list = pd.DataFrame(feature_list_display_data)
+                st.dataframe(df_feature_list, use_container_width=True, hide_index=True)
+            else:
+                # This case should not be reached if all_active_features is populated.
+                st.caption("Could not prepare feature list for display, though active features were detected.")
+        else:
+            st.caption("No active features (features with non-zero activations) were found in this simulation run.")
+
+
 
 # --- 👑 Lineage Explorer Tab ---
 with tab_container_map["👑 Lineage Explorer"]:
