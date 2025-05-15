@@ -645,8 +645,7 @@ def perform_trajectory_statistical_test(
 def plot_feature_activation_trajectories(
     feature_trajectories_data: dict,
     output_filename: str = DEFAULT_PLOT_FILENAME,
-    top_n_label: int = 3, # Changed to 3 as per new requirement
-    # bottom_n_label is no longer used due to "ONLY TOP 3 LABELS"
+    top_n_label: int = 3,
     smoothing_window: int = SMOOTHING_WINDOW_SIZE,
     smoothing_order: int = SMOOTHING_POLYORDER
 ):
@@ -956,7 +955,6 @@ if __name__ == "__main__":
                     trajectories,
                     args.output_plot_file,
                     top_n_label=PLOT_TOP_N_LABEL,
-                    bottom_n_label=PLOT_BOTTOM_N_LABEL,
                     smoothing_window=SMOOTHING_WINDOW_SIZE,
                     smoothing_order=SMOOTHING_POLYORDER
                 )
