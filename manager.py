@@ -14,7 +14,7 @@ import uuid
 import math
 import copy
 import goodfire # For goodfire.Variant and goodfire.Feature
-from interface import get_goodfire_client # To get the API client instance
+from interface import get_goodfire_async_client, get_goodfire_client 
 
 class Agent:
     """
