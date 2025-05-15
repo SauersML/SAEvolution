@@ -1029,59 +1029,86 @@ with tab_container_map["🧬 Feature Explorer"]:
                 st.altair_chart(layered_chart, use_container_width=True)
 
             # 2. Correlation with Success (selected generation)
-            gen_for_corr_feature = st.slider("Select Generation for Correlation Plot", 1, latest_gen_num, latest_gen_num, key="feature_corr_gen_slider")
-            correlation_data = []
-            if gen_for_corr_feature in all_gen_data:
-                pop_state_corr = all_gen_data[gen_for_corr_feature].get("population_state", [])
-                fitness_map_corr = all_gen_data[gen_for_corr_feature].get("generation_summary_metrics", {}).get("fitness_scores_map", {})
+            # This plot depends on full population state, so use max_fully_checkpointed_generation
+            st.subheader("Feature Correlation with Agent Success")
+            gen_for_corr_feature = None # Initialize
 
-                for agent_data in pop_state_corr:
-                    genome = agent_data.get("genome", {})
-                    feature_info = genome.get(selected_feature_uuid)
-                    if feature_info:
-                        act_val = feature_info.get('activation') if isinstance(feature_info, dict) else feature_info
-                        fitness = agent_data.get("fitness_score", fitness_map_corr.get(agent_data['agent_id']))
-                        if fitness is not None:
-                            correlation_data.append({
-                                "activation": act_val,
-                                "fitness": fitness,
-                                "agent_id_short": get_agent_display_name(agent_data['agent_id'])
-                            })
-            
-            if correlation_data:
-                df_corr = pd.DataFrame(correlation_data)
-                corr_chart = alt.Chart(df_corr).mark_circle(size=60).encode(
-                    x=alt.X('activation:Q', title=f'Activation of {feature_options.get(selected_feature_uuid, "Feature")}'),
-                    y=alt.Y('fitness:Q', title='Agent Fitness'),
-                    tooltip=['agent_id_short', alt.Tooltip('activation:Q', format=".3f"), alt.Tooltip('fitness:Q', format=".3f")]
-                ).properties(title=f"Feature Activation vs. Fitness (Gen {gen_for_corr_feature})").interactive()
-                st.altair_chart(corr_chart, use_container_width=True)
-                # Calculate and display Pearson correlation
-                if len(df_corr['activation']) > 1 and len(df_corr['fitness']) > 1: # Need at least 2 points
-                     pearson_r = df_corr['activation'].corr(df_corr['fitness'])
-                     st.metric(label="Pearson Correlation (Activation vs. Fitness)", value=f"{pearson_r:.3f}")
-            else:
-                st.caption(f"No agents with this feature found in Generation {gen_for_corr_feature} for correlation plot.")
+            if max_fully_checkpointed_generation == 0:
+                st.info("No fully checkpointed generation data available to display feature correlation.")
+            elif max_fully_checkpointed_generation == 1:
+                gen_for_corr_feature = 1
+                st.markdown(f"Displaying correlation for Generation 1 (only fully checkpointed generation with population data).")
+            else: # max_fully_checkpointed_generation > 1
+                gen_for_corr_feature = st.slider(
+                    "Select Generation for Correlation Plot",
+                    min_value=1,
+                    max_value=max_fully_checkpointed_generation, # Max is the latest gen with full data
+                    value=max_fully_checkpointed_generation,   # Default to the latest fully checkpointed gen
+                    key="feature_corr_gen_slider"
+                )
+
+            if gen_for_corr_feature is not None: # Proceed only if a valid generation is selected or determined
+                correlation_data = []
+                # Check against all_gen_data, which stores full states up to max_fully_checkpointed_generation
+                if gen_for_corr_feature in all_gen_data:
+                    pop_state_corr = all_gen_data[gen_for_corr_feature].get("population_state", [])
+                    fitness_map_corr = all_gen_data[gen_for_corr_feature].get("generation_summary_metrics", {}).get("fitness_scores_map", {})
+
+                    for agent_data in pop_state_corr:
+                        genome = agent_data.get("genome", {})
+                        feature_info = genome.get(selected_feature_uuid)
+                        if feature_info:
+                            act_val = feature_info.get('activation') if isinstance(feature_info, dict) else feature_info
+                            fitness = agent_data.get("fitness_score", fitness_map_corr.get(agent_data['agent_id']))
+                            if fitness is not None:
+                                correlation_data.append({
+                                    "activation": act_val,
+                                    "fitness": fitness,
+                                    "agent_id_short": get_agent_display_name(agent_data['agent_id'])
+                                })
+                else:
+                    # This case should be rare if gen_for_corr_feature is derived from max_fully_checkpointed_generation correctly
+                    st.error(f"Population data for generation {gen_for_corr_feature} (selected for correlation) not found in fully checkpointed data.")
+                
+                if correlation_data:
+                    df_corr = pd.DataFrame(correlation_data)
+                    corr_chart = alt.Chart(df_corr).mark_circle(size=60).encode(
+                        x=alt.X('activation:Q', title=f'Activation of {feature_options.get(selected_feature_uuid, "Feature")}'),
+                        y=alt.Y('fitness:Q', title='Agent Fitness'),
+                        tooltip=['agent_id_short', alt.Tooltip('activation:Q', format=".3f"), alt.Tooltip('fitness:Q', format=".3f")]
+                    ).properties(title=f"Feature Activation vs. Fitness (Gen {gen_for_corr_feature})").interactive()
+                    st.altair_chart(corr_chart, use_container_width=True)
+                    # Calculate and display Pearson correlation
+                    if len(df_corr['activation']) > 1 and len(df_corr['fitness']) > 1: # Need at least 2 points
+                         pearson_r = df_corr['activation'].corr(df_corr['fitness'])
+                         st.metric(label="Pearson Correlation (Activation vs. Fitness)", value=f"{pearson_r:.3f}")
+                elif gen_for_corr_feature in all_gen_data: # Data for the generation exists, but no correlation points (e.g., feature not present)
+                    st.caption(f"No agents with this feature, or no fitness data, found in Generation {gen_for_corr_feature} for correlation plot.")
+            # If gen_for_corr_feature is None, the st.info message from above already covers it.
 
             # 3. Agent List by Feature (Table - for selected generation)
             st.markdown("---")
             st.subheader(f"Agents with Feature '{get_feature_display_name(selected_feature_uuid, feature_options.get(selected_feature_uuid))}' in a Selected Generation")
             
-            # Slider for selecting generation for the agent list table
-            if latest_gen_num == 1:
+            # Slider for selecting generation for the agent list table, uses max_fully_checkpointed_generation
+            gen_for_agent_list_feature = None # Initialize
+
+            if max_fully_checkpointed_generation == 0:
+                st.info("No fully checkpointed generation data available for agent list.")
+            elif max_fully_checkpointed_generation == 1:
                 gen_for_agent_list_feature = 1
-                st.markdown("Displaying agent list for Generation 1 (only generation available).")
-            else:
+                st.markdown("Displaying agent list for Generation 1 (only fully checkpointed generation available).")
+            else: # max_fully_checkpointed_generation > 1
                 gen_for_agent_list_feature = st.slider(
                     "Select Generation for Agent List", 
-                    1, 
-                    latest_gen_num, 
-                    latest_gen_num, # Default to latest gen
+                    min_value=1, 
+                    max_value=max_fully_checkpointed_generation, 
+                    value=max_fully_checkpointed_generation, # Default to latest fully checkpointed gen
                     key="feature_agent_list_gen_slider"
                 )
 
             agents_with_feature_data = []
-            if gen_for_agent_list_feature in all_gen_data:
+            if gen_for_agent_list_feature is not None and gen_for_agent_list_feature in all_gen_data:
                 pop_state_agent_list = all_gen_data[gen_for_agent_list_feature].get("population_state", [])
                 fitness_map_agent_list = all_gen_data[gen_for_agent_list_feature].get("generation_summary_metrics", {}).get("fitness_scores_map", {})
 
