@@ -451,32 +451,67 @@ def apply_algorithmic_genome_update(
     return offspring_genome
 
 
+async def _inspect_parent_features_task(
+    client: goodfire.AsyncClient, 
+    parent_agent: Agent, 
+    final_messages_for_api_inspect: list[dict], 
+    inspect_aggregate_by_val: str, 
+    config: dict # Pass config for logging/potential future use
+) -> goodfire.ContextInspector | Exception | None:
+    """
+    Helper coroutine to run feature inspection for a single parent agent.
+    Returns the ContextInspector object on success, an Exception on failure, or None if no inspection is done.
+    """
+    if not final_messages_for_api_inspect:
+        logging.debug(f"Parent {parent_agent.agent_id}: No messages provided for inspection. Skipping task.")
+        return None 
+    
+    parent_variant = goodfire.Variant(parent_agent.model_id)
+    parent_genome_for_api = parent_agent.get_genome_for_goodfire_variant()
+    if parent_genome_for_api:
+        try:
+            parent_variant.set(parent_genome_for_api)
+        except Exception as e_set_variant:
+            logging.error(f"Parent {parent_agent.agent_id}: Error setting variant for inspection task: {e_set_variant}", exc_info=True)
+            return e_set_variant # Return exception if variant setting fails
+
+    try:
+        logging.debug(f"Parent {parent_agent.agent_id}: Starting inspection task with {len(final_messages_for_api_inspect)} messages.")
+        context_inspector = await client.features.inspect(
+            messages=final_messages_for_api_inspect,
+            model=parent_variant,
+            features=None, 
+            aggregate_by=inspect_aggregate_by_val
+        )
+        logging.debug(f"Parent {parent_agent.agent_id}: Inspection task completed successfully.")
+        return context_inspector
+    except Exception as e:
+        logging.error(f"Parent {parent_agent.agent_id}: Error during inspection task: {e}", exc_info=True)
+        return e # Return the exception to be handled by the caller
+
 async def evolve_population(
     population: list[Agent], 
     fitness_scores: list[float], 
     config: dict,
     all_games_this_generation: list[dict],
-    global_feature_cache: dict # parameter for the global feature metadata cache
+    global_feature_cache: dict # Added parameter for the global feature metadata cache
 ) -> list[Agent]:
     """
     Evolves the population to create a new generation of agents.
-    This involves parent selection and genome modification for offspring using feature inspection.
-    Args:
-        population: The current population of agents.
-        fitness_scores: Fitness scores for the current population.
-        config: The simulation configuration dictionary.
-        all_games_this_generation: A list of all game detail dictionaries from the current generation.
+    This involves parent selection, concurrent feature inspection for eligible parents,
+    and genome modification for offspring based on inspection results.
+    The global_feature_cache is populated with metadata from successful inspections.
     """
     if not isinstance(population, list) or \
        not isinstance(fitness_scores, list) or \
        not isinstance(config, dict) or \
-       not isinstance(all_games_this_generation, list):
-        logging.error("evolve_population: Invalid arguments.")
+       not isinstance(all_games_this_generation, list) or \
+       not isinstance(global_feature_cache, dict): # Check cache type
+        logging.error("evolve_population: Invalid arguments (population, fitness_scores, config, all_games_this_generation, or global_feature_cache).")
         return copy.deepcopy(population) if isinstance(population, list) else []
 
     population_size = len(population)
-    new_population: list[Agent] = []
-
+    
     evo_config = config.get('evolution', {})
     inspect_top_k_val = int(evo_config.get('inspect_top_k', 10))
     inspect_aggregate_by_val = evo_config.get('inspect_aggregate_by', 'max')
@@ -493,230 +528,169 @@ async def evolve_population(
     if not selected_parents or len(selected_parents) != population_size :
          logging.error(f"Parent selection failed or returned incorrect number of parents ({len(selected_parents)} instead of {population_size}). Returning clones of original population.")
          cloned_population = [Agent.from_dict(p.to_dict()) for p in population]
-         for agent_instance in cloned_population: agent_instance.reset_round_state(initial_wealth) # Renamed agent to agent_instance
+         for agent_instance in cloned_population: agent_instance.reset_round_state(initial_wealth)
          return cloned_population
 
     try:
-        # Use the asynchronous client for feature inspection
         client = get_goodfire_async_client(config)
     except Exception as e:
         logging.critical(f"Failed to initialize Goodfire client in evolve_population: {e}. Cannot proceed with feature inspection based evolution.", exc_info=True)
-        # Fallback: Create offspring by cloning parents without genome modification
-        cloned_population = [Agent.from_dict(p.to_dict()) for p in selected_parents] # Use selected_parents
+        cloned_population = [Agent.from_dict(p.to_dict()) for p in selected_parents]
         for agent_instance in cloned_population: agent_instance.reset_round_state(initial_wealth)
         logging.warning("Falling back to cloning parents due to Goodfire client initialization failure.")
         return cloned_population
 
-
+    # Prepare inspection tasks
+    inspection_tasks_with_context = []
     for parent_agent in selected_parents:
+        final_messages_for_api_inspect_for_current_parent: list[dict] = []
+        parent_game_id_for_current_parent: str | None = None # For logging
+        outcome_for_current_parent: str | None = None # For decision making
+
+        if not parent_agent.round_history:
+            logging.info(f"Parent {parent_agent.agent_id} has no game history this round. No inspection task created.")
+        else:
+            parent_game_summary = parent_agent.round_history[0]
+            parent_game_id_for_current_parent = parent_game_summary.get('game_id')
+            outcome_for_current_parent = parent_game_summary.get('outcome')
+            
+            full_game_details_for_parent = None
+            if parent_game_id_for_current_parent:
+                full_game_details_for_parent = next((g for g in all_games_this_generation if g.get("game_id") == parent_game_id_for_current_parent), None)
+
+            transcript_for_inspection = full_game_details_for_parent.get('transcript') if full_game_details_for_parent else None
+
+            if transcript_for_inspection and isinstance(transcript_for_inspection, list) and outcome_for_current_parent in ['win', 'loss']:
+                message_content_for_inspect = None
+                role_for_inspect_api = "assistant"
+                parent_agent_role_in_this_game = None
+                player_A_id_from_game = full_game_details_for_parent.get('player_A_id')
+                player_B_id_from_game = full_game_details_for_parent.get('player_B_id')
+                player_A_game_role_from_game = full_game_details_for_parent.get('player_A_game_role')
+                player_B_game_role_from_game = full_game_details_for_parent.get('player_B_game_role')
+
+                if player_A_id_from_game == parent_agent.agent_id: parent_agent_role_in_this_game = player_A_game_role_from_game
+                elif player_B_id_from_game == parent_agent.agent_id: parent_agent_role_in_this_game = player_B_game_role_from_game
+                
+                if not parent_agent_role_in_this_game:
+                    logging.warning(f"Parent {parent_agent.agent_id} (Game: {parent_game_id_for_current_parent}) - Could not determine parent's game role. Skipping targeted message identification for inspection.")
+                
+                target_message_id_from_adj = None
+                if outcome_for_current_parent == 'win' and parent_agent_role_in_this_game:
+                    target_message_id_from_adj = full_game_details_for_parent.get('adjudication_win_message_id')
+                elif outcome_for_current_parent == 'loss' and parent_agent_role_in_this_game:
+                    target_message_id_from_adj = full_game_details_for_parent.get('adjudication_lose_message_id')
+
+                if target_message_id_from_adj and target_message_id_from_adj.lower() not in ["n/a", "tie", "none", ""]:
+                    match_id = re.match(r"([AB])([0-9]+)", target_message_id_from_adj.upper())
+                    if match_id:
+                        role_prefix_adj, turn_num_1_based_adj_str = match_id.group(1), match_id.group(2)
+                        turn_num_1_based_adj = int(turn_num_1_based_adj_str)
+                        expected_speaker_game_role_adj = player_A_game_role_from_game if role_prefix_adj == "A" else player_B_game_role_from_game
+                        if expected_speaker_game_role_adj == parent_agent_role_in_this_game:
+                            current_role_turn_count = 0
+                            for turn_data in transcript_for_inspection:
+                                if turn_data.get("role") == parent_agent_role_in_this_game:
+                                    current_role_turn_count += 1
+                                    if current_role_turn_count == turn_num_1_based_adj:
+                                        message_content_for_inspect = turn_data.get("content")
+                                        break
+                        else: logging.warning(f"Parent {parent_agent.agent_id}: Adjudicator message ID '{target_message_id_from_adj}' refers to opponent's message. Using fallback.")
+                    else: logging.warning(f"Parent {parent_agent.agent_id}: Could not parse adjudicator message ID '{target_message_id_from_adj}'. Using fallback.")
+                elif target_message_id_from_adj: logging.info(f"Parent {parent_agent.agent_id}: Adjudicator message ID was '{target_message_id_from_adj}'. Using fallback.")
+
+                if not message_content_for_inspect and outcome_for_current_parent in ['win', 'loss']: # Fallback
+                    for turn_data in reversed(transcript_for_inspection):
+                        if turn_data.get("agent_id") == parent_agent.agent_id:
+                            message_content_for_inspect = turn_data.get("content")
+                            break
+                
+                if message_content_for_inspect:
+                    final_messages_for_api_inspect_for_current_parent = [{"role": role_for_inspect_api, "content": message_content_for_inspect}]
+                else:
+                    logging.warning(f"Parent {parent_agent.agent_id} (Game: {parent_game_id_for_current_parent}): No suitable message found for inspection.")
+            else: # No transcript, or not win/loss
+                 log_msg_reason = "no valid transcript" if not transcript_for_inspection else f"outcome '{outcome_for_current_parent}' not win/loss"
+                 logging.info(f"Parent {parent_agent.agent_id} (Game: {parent_game_id_for_current_parent}): No inspection task due to {log_msg_reason}.")
+        
+        task_coro = None
+        if final_messages_for_api_inspect_for_current_parent:
+            task_coro = _inspect_parent_features_task(client, parent_agent, final_messages_for_api_inspect_for_current_parent, inspect_aggregate_by_val, config)
+        
+        inspection_tasks_with_context.append({
+            "task_coro": task_coro,
+            "parent": parent_agent,
+            "outcome": outcome_for_current_parent, # Store outcome for later use
+            "game_id": parent_game_id_for_current_parent # For logging
+        })
+
+    # Execute inspection tasks concurrently
+    coroutines_to_await = [item["task_coro"] for item in inspection_tasks_with_context if item["task_coro"] is not None]
+    gathered_results = []
+    if coroutines_to_await:
+        logging.info(f"Starting concurrent inspection for {len(coroutines_to_await)} parents.")
+        gathered_results = await asyncio.gather(*coroutines_to_await, return_exceptions=True)
+        logging.info(f"Finished concurrent inspection. Received {len(gathered_results)} results/exceptions.")
+    
+    # Process results and create offspring
+    new_population: list[Agent] = []
+    result_idx = 0 # To map results from gathered_results back to tasks that were actually run
+
+    for item_context in inspection_tasks_with_context:
+        parent_agent = item_context["parent"]
+        outcome = item_context["outcome"] # This is the outcome of the parent's game
+        game_id_for_log = item_context["game_id"] # For logging purposes
+
         offspring_genome = copy.deepcopy(parent_agent.genome)
         positive_feature_uuids_for_record: list[str] = []
         negative_feature_uuids_for_record: list[str] = []
         features_to_reinforce_objs: list[goodfire.Feature] = []
         features_to_suppress_objs: list[goodfire.Feature] = []
+        
+        context_inspector_result = None
+        if item_context["task_coro"] is not None: # A task was scheduled for this parent
+            if result_idx < len(gathered_results):
+                current_result_from_gather = gathered_results[result_idx]
+                result_idx += 1
 
-        if not parent_agent.round_history:
-            logging.info(f"Parent {parent_agent.agent_id} has no game history this round. Offspring inherits genome without inspection update.")
-        else:
-            # Get the summary of the game played by the parent (we'll use its game_id)
-            # The first game in round_history is the one to inspect for evolution for now.
-            # THIS REQUIRES THERE TO BE ONE GAME PER GENERATION
-            parent_game_summary = parent_agent.round_history[0]
-            parent_game_id = parent_game_summary.get('game_id')
-            outcome = parent_game_summary.get('outcome')
+                if isinstance(current_result_from_gather, goodfire.ContextInspector):
+                    context_inspector_result = current_result_from_gather
+                    # Populate global_feature_cache with any newly fetched feature metadata
+                    if hasattr(context_inspector_result, '_features') and isinstance(context_inspector_result._features, dict):
+                        logging.debug(f"Parent {parent_agent.agent_id} (Game: {game_id_for_log}): ContextInspector has {len(context_inspector_result._features)} features in its internal cache.")
+                        for f_uuid_str, gf_feature_obj in context_inspector_result._features.items():
+                            if f_uuid_str not in global_feature_cache:
+                                global_feature_cache[f_uuid_str] = gf_feature_obj
+                                logging.debug(f"Parent {parent_agent.agent_id} (Game: {game_id_for_log}): Added feature {f_uuid_str} ('{gf_feature_obj.label}') to global cache.")
+                            # else:
+                                # logging.debug(f"Parent {parent_agent.agent_id} (Game: {game_id_for_log}): Feature {f_uuid_str} already in global cache.")
+                elif isinstance(current_result_from_gather, Exception):
+                    logging.error(f"Inspection task for parent {parent_agent.agent_id} (Game: {game_id_for_log}) resulted in an exception: {current_result_from_gather}", exc_info=current_result_from_gather)
+                else: # Should not happen if _inspect_parent_features_task returns ContextInspector, Exception, or None
+                    logging.error(f"Unexpected result type '{type(current_result_from_gather)}' from inspection task for parent {parent_agent.agent_id} (Game: {game_id_for_log}).")
+            else:
+                logging.error(f"Logic error: Mismatch between tasks scheduled and results received for parent {parent_agent.agent_id}. Expected result_idx < {len(gathered_results)} but got {result_idx}.")
+
+
+        if context_inspector_result:
+            logging.debug(f"Parent {parent_agent.agent_id} (Game: {game_id_for_log}): Processing successful inspection result.")
+            top_feature_activations = context_inspector_result.top(k=inspect_top_k_val)
+            activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature') and isinstance(fa.feature, goodfire.Feature)]
             
-            full_game_details_for_parent = None
-            if parent_game_id:
-                full_game_details_for_parent = next((g for g in all_games_this_generation if g.get("game_id") == parent_game_id), None)
+            num_usable_features = len(activated_features_in_game)
+            logging.info(f"Parent {parent_agent.agent_id} (Outcome: {outcome}, Game: {game_id_for_log}): Inspection yielded {num_usable_features} usable features from top {inspect_top_k_val}.")
 
-            if not full_game_details_for_parent:
-                logging.warning(f"Parent {parent_agent.agent_id} played game {parent_game_id}, but full details not found in all_games_this_generation. Skipping inspection.")
-                transcript_for_inspection = None
-            else:
-                transcript_for_inspection = full_game_details_for_parent.get('transcript') # This is List[Dict[str, str]] like ChatMessage
+            if outcome == 'win':
+                features_to_reinforce_objs = activated_features_in_game
+                positive_feature_uuids_for_record = [str(f.uuid) for f in features_to_reinforce_objs if f and hasattr(f, 'uuid')]
+            elif outcome == 'loss':
+                features_to_suppress_objs = activated_features_in_game
+                negative_feature_uuids_for_record = [str(f.uuid) for f in features_to_suppress_objs if f and hasattr(f, 'uuid')]
+        else:
+            # This covers cases where task_coro was None, or the task failed, or returned None
+            logging.info(f"Parent {parent_agent.agent_id} (Game: {game_id_for_log}): No inspection result to process. Offspring inherits genome without inspection-based update.")
 
-            if transcript_for_inspection and isinstance(transcript_for_inspection, list) and outcome in ['win', 'loss']:
-                logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}) - Preparing to inspect game {parent_game_id} with {len(transcript_for_inspection)} transcript entries.")
-                try:
-                    parent_variant = goodfire.Variant(parent_agent.model_id)
-                    parent_genome_for_api_variant_set = parent_agent.get_genome_for_goodfire_variant()
-                    if parent_genome_for_api_variant_set:
-                        parent_variant.set(parent_genome_for_api_variant_set)
-
-                    logging.debug(f"Inspecting game transcript for parent {parent_agent.agent_id} (outcome: {outcome}) using aggregate_by='{inspect_aggregate_by_val}'")
-                    logging.debug(f"Inspecting game transcript for parent {parent_agent.agent_id} (outcome: {outcome}) using aggregate_by='{inspect_aggregate_by_val}'")
-
-
-                    message_content_for_inspect = None
-                    # The role for the Goodfire API for the selected message will always be "assistant",
-                    # as we are inspecting an utterance made by the parent (or an utterance critical to their outcome).
-                    role_for_inspect_api = "assistant" 
-                    
-                    # Determine parent's actual game role (e.g., "Role A" or "Role B") in this specific game
-                    parent_agent_role_in_this_game = None
-                    player_A_id_from_game = full_game_details_for_parent.get('player_A_id')
-                    player_B_id_from_game = full_game_details_for_parent.get('player_B_id')
-                    player_A_game_role_from_game = full_game_details_for_parent.get('player_A_game_role')
-                    player_B_game_role_from_game = full_game_details_for_parent.get('player_B_game_role')
-
-                    if player_A_id_from_game == parent_agent.agent_id:
-                        parent_agent_role_in_this_game = player_A_game_role_from_game
-                    elif player_B_id_from_game == parent_agent.agent_id:
-                        parent_agent_role_in_this_game = player_B_game_role_from_game
-                    
-                    if not parent_agent_role_in_this_game:
-                        logging.warning(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Could not determine parent's game role. Skipping targeted message identification.")
-                    
-                    # Primary strategy: Use Adjudicator-identified critical message
-                    target_message_id_from_adj = None
-                    if outcome == 'win' and parent_agent_role_in_this_game:
-                        target_message_id_from_adj = full_game_details_for_parent.get('adjudication_win_message_id')
-                        logging.debug(f"Parent {parent_agent.agent_id} won. Adjudicator identified winner message ID: '{target_message_id_from_adj}'")
-                    elif outcome == 'loss' and parent_agent_role_in_this_game:
-                        target_message_id_from_adj = full_game_details_for_parent.get('adjudication_lose_message_id')
-                        logging.debug(f"Parent {parent_agent.agent_id} lost. Adjudicator identified loser message ID: '{target_message_id_from_adj}'")
-
-                    if target_message_id_from_adj and target_message_id_from_adj.lower() not in ["n/a", "tie", "none", ""]:
-                        match_id = re.match(r"([AB])([0-9]+)", target_message_id_from_adj.upper())
-                        if match_id:
-                            role_prefix_adj = match_id.group(1) # "A" or "B"
-                            turn_num_1_based_adj = int(match_id.group(2))
-                            
-                            # Determine the game role string (e.g., "Role A") corresponding to the adjudicator's prefix
-                            expected_speaker_game_role_adj = None
-                            if role_prefix_adj == "A": expected_speaker_game_role_adj = player_A_game_role_from_game
-                            elif role_prefix_adj == "B": expected_speaker_game_role_adj = player_B_game_role_from_game
-                            
-                            # the identified message is actually from the parent agent
-                            if expected_speaker_game_role_adj == parent_agent_role_in_this_game:
-                                current_role_turn_count = 0
-                                for turn_idx_transcript, turn_data in enumerate(transcript_for_inspection):
-                                    if turn_data.get("role") == parent_agent_role_in_this_game: # Count turns of the parent
-                                        current_role_turn_count += 1
-                                        if current_role_turn_count == turn_num_1_based_adj:
-                                            message_content_for_inspect = turn_data.get("content")
-                                            logging.info(f"Parent {parent_agent.agent_id}: Using adjudicator-identified message (ID: {target_message_id_from_adj}, their turn #{turn_num_1_based_adj}) for inspection. Content snippet: '{message_content_for_inspect[:50] if message_content_for_inspect else 'N/A'}'")
-                                            break 
-                                if not message_content_for_inspect:
-                                    logging.warning(f"Parent {parent_agent.agent_id}: Adjudicator message ID '{target_message_id_from_adj}' indicated parent's turn, but corresponding message not found in transcript or turn number out of bounds.")
-                            else:
-                                logging.warning(f"Parent {parent_agent.agent_id}: Adjudicator message ID '{target_message_id_from_adj}' refers to opponent's message. Using fallback.")
-                        else:
-                            logging.warning(f"Parent {parent_agent.agent_id}: Could not parse adjudicator message ID '{target_message_id_from_adj}'. Using fallback.")
-                    elif target_message_id_from_adj: # It was "N/A", "tie", etc.
-                         logging.info(f"Parent {parent_agent.agent_id}: Adjudicator message ID was '{target_message_id_from_adj}'. Using fallback.")
-
-
-                    # Fallback logic: Parent's last message
-                    if not message_content_for_inspect and outcome in ['win', 'loss']:
-                        logging.info(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}): Using fallback - parent's last message for inspection.")
-                        for turn_data in reversed(transcript_for_inspection):
-                            if turn_data.get("agent_id") == parent_agent.agent_id:
-                                message_content_for_inspect = turn_data.get("content")
-                                logging.info(f"Parent {parent_agent.agent_id}: Using parent's last message. Content snippet: '{message_content_for_inspect[:50] if message_content_for_inspect else 'N/A'}'")
-                                break
-                        if not message_content_for_inspect:
-                             logging.warning(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}): Fallback failed - parent agent had no messages in the transcript.")
-                    
-                    final_messages_for_api_inspect = []
-                    if message_content_for_inspect: # Content must exist
-                        final_messages_for_api_inspect = [{"role": role_for_inspect_api, "content": message_content_for_inspect}]
-                    else:
-                        logging.warning(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}): No suitable single message identified for feature inspection. Genome update based on inspection will be skipped for this game.")
-
-
-                    top_feature_activations = [] # Default to empty if inspection is skipped
-                    if final_messages_for_api_inspect:
-                        try:
-                            # It handles fetching features internally if _fetch_feature_data is True (default).
-                            context_inspector = await client.features.inspect(
-                                messages=final_messages_for_api_inspect, 
-                                model=parent_variant,
-                                features=None, 
-                                aggregate_by=inspect_aggregate_by_val
-                            )
-                            top_feature_activations = context_inspector.top(k=inspect_top_k_val)
-                            
-                            logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector internal _feature_strengths (first 5 of {len(context_inspector._feature_strengths)}): {dict(list(context_inspector._feature_strengths.items())[:5])}")
-                            logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector internal _feature_ids (count): {len(context_inspector._feature_ids)}")
-                            logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector internal _features (populated by fetch_features, count): {len(context_inspector._features)}")
-                            if context_inspector._features:
-                                logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector _features sample keys (first 5 of {len(context_inspector._features)}): {list(context_inspector._features.keys())[:5]}")
-                            else:
-                                logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - ContextInspector _features is empty or None.")
-                        except Exception as inspect_err:
-                            logging.error(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}): Error during client.features.inspect() call with single message: {inspect_err}", exc_info=True)
-                            top_feature_activations = [] # it's an empty list on error
-                    
-                    # Log details of what top_feature_activations contains (this logging block was from your previous version and is good)
-                    num_top_feature_activations_objects = len(top_feature_activations) if top_feature_activations else 0
-                    logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - `top_feature_activations` (from context_inspector.top({inspect_top_k_val})) count: {num_top_feature_activations_objects}")
-
-                    if top_feature_activations: 
-                        logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Content of `top_feature_activations` (type: {type(top_feature_activations)}):")
-                        for i, fa_item in enumerate(top_feature_activations):
-                            if hasattr(fa_item, 'feature') and fa_item.feature and hasattr(fa_item.feature, 'uuid'): 
-                                logging.debug(f"  Item {i}: Feature UUID: {fa_item.feature.uuid}, Label: {getattr(fa_item.feature, 'label', 'N/A')}, Index: {getattr(fa_item.feature, 'index_in_sae', 'N/A')}, Aggregated Activation: {fa_item.activation}")
-                            elif hasattr(fa_item, 'activation'):
-                                logging.debug(f"  Item {i}: Has Aggregated Activation {fa_item.activation} but no valid .feature attribute (or feature.uuid is missing). FA Object: {fa_item}")
-                            else:
-                                logging.debug(f"  Item {i}: Malformed FeatureActivation object (lacks .feature or .activation): {fa_item}")
-
-
-                    num_top_feature_activations_objects = len(top_feature_activations) if top_feature_activations else 0
-                    logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - `top_feature_activations` (from context_inspector.top({inspect_top_k_val})) count: {num_top_feature_activations_objects}")
-
-                    if top_feature_activations: # Check if the list itself is not None and not empty
-                        logging.debug(f"Parent {parent_agent.agent_id} (Game: {parent_game_id}) - Content of `top_feature_activations` (type: {type(top_feature_activations)}):")
-                        for i, fa_item in enumerate(top_feature_activations):
-                            if hasattr(fa_item, 'feature') and fa_item.feature and hasattr(fa_item.feature, 'uuid'): # Check feature and its uuid
-                                logging.debug(f"  Item {i}: Feature UUID: {fa_item.feature.uuid}, Label: {getattr(fa_item.feature, 'label', 'N/A')}, Index: {getattr(fa_item.feature, 'index_in_sae', 'N/A')}, Aggregated Activation: {fa_item.activation}")
-                            elif hasattr(fa_item, 'activation'):
-                                logging.debug(f"  Item {i}: Has Aggregated Activation {fa_item.activation} but no valid .feature attribute (or feature.uuid is missing). FA Object: {fa_item}")
-                            else:
-                                logging.debug(f"  Item {i}: Malformed FeatureActivation object (lacks .feature or .activation): {fa_item}")
-
-                    # Extract usable features that have a valid 'feature' attribute which is a goodfire.Feature object
-                    activated_features_in_game = [fa.feature for fa in top_feature_activations if hasattr(fa, 'feature') and isinstance(fa.feature, goodfire.Feature)]
-                    
-                    # Summarize findings
-                    num_actually_usable_features = len(activated_features_in_game)
-                    logging.info(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): Attempted inspection. `context_inspector.top()` returned {num_top_feature_activations_objects} FeatureActivation objects. Extracted {num_actually_usable_features} usable `goodfire.Feature` objects.")
-
-                    if num_actually_usable_features > 0:
-                        feature_log_display_limit = 3
-                        logging.info(f"Parent {parent_agent.agent_id} - First {min(num_actually_usable_features, feature_log_display_limit)} usable features (UUID and Label):")
-                        for i, feat in enumerate(activated_features_in_game[:feature_log_display_limit]):
-                            logging.info(f"    Feature {i}: UUID={feat.uuid}, Label='{feat.label}', Index={feat.index_in_sae}")
-                        if num_actually_usable_features > feature_log_display_limit:
-                            logging.info(f"    ... and {num_actually_usable_features - feature_log_display_limit} more usable features.")
-                    elif num_top_feature_activations_objects > 0: # top_feature_activations had items, but none were usable features
-                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): `context_inspector.top()` returned {num_top_feature_activations_objects} items, but none were convertible to usable `goodfire.Feature` objects for evolution.")
-                    else: # top_feature_activations was empty or None
-                        logging.warning(f"Parent {parent_agent.agent_id} (outcome: {outcome}, game: {parent_game_id}): `context_inspector.top()` returned no FeatureActivation objects. No features identified for evolution from this game.")
-
-
-                    if outcome == 'win':
-                        features_to_reinforce_objs = activated_features_in_game
-                        positive_feature_uuids_for_record = [str(f.uuid) for f in features_to_reinforce_objs if f and hasattr(f, 'uuid')]
-                    elif outcome == 'loss':
-                        features_to_suppress_objs = activated_features_in_game
-                        negative_feature_uuids_for_record = [str(f.uuid) for f in features_to_suppress_objs if f and hasattr(f, 'uuid')]
-
-                except Exception as e:
-                    logging.error(f"Error during feature inspection for parent {parent_agent.agent_id}: {e}", exc_info=True)
-            else:
-                if not transcript_for_inspection:
-                    log_msg_detail = "no valid transcript found for inspection"
-                elif not isinstance(transcript_for_inspection, list):
-                    log_msg_detail = f"transcript_for_inspection was not a list (type: {type(transcript_for_inspection)})"
-                elif outcome not in ['win', 'loss']:
-                    log_msg_detail = f"outcome '{outcome}' was not 'win' or 'loss'"
-                else: # Should not be reached if the outer if condition was false for other reasons
-                    log_msg_detail = "unknown reason for skipping inspection despite transcript and outcome"
-                
-                logging.info(f"Parent {parent_agent.agent_id} (game: {parent_game_id}, outcome: {outcome}): Skipped feature inspection because {log_msg_detail}. Offspring inherits genome without inspection update.")
-
+        # Apply genome updates regardless of whether inspection happened (it might be empty lists)
         if features_to_reinforce_objs or features_to_suppress_objs:
             offspring_genome = apply_algorithmic_genome_update(
                 current_genome_state=offspring_genome,
@@ -724,10 +698,8 @@ async def evolve_population(
                 features_to_suppress=features_to_suppress_objs,
                 config=config
             )
-        else:
-            logging.debug(f"No features identified from inspection for parent {parent_agent.agent_id} to apply updates, or outcome was not win/loss/tie. Offspring inherits genome.")
-
-
+        
+        # Create offspring
         offspring_agent_id = str(uuid.uuid4())
         try:
             offspring = Agent(
@@ -740,13 +712,32 @@ async def evolve_population(
                 evolutionary_input_negative_features=negative_feature_uuids_for_record
             )
             new_population.append(offspring)
-            logging.debug(f"Created offspring {offspring_agent_id} from parent {parent_agent.agent_id}.")
-        except Exception as e:
-             logging.error(f"Failed to create offspring agent {offspring_agent_id} from parent {parent_agent.agent_id}: {e}", exc_info=True)
+        except Exception as e_create_offspring:
+            logging.error(f"Failed to create offspring for parent {parent_agent.agent_id} (ID: {offspring_agent_id}): {e_create_offspring}", exc_info=True)
+            # Fallback: add a clone of the parent to maintain population size
+            logging.warning(f"Adding a clone of parent {parent_agent.agent_id} due to offspring creation error.")
+            cloned_parent = Agent.from_dict(parent_agent.to_dict()) # Create a new instance
+            cloned_parent.agent_id = offspring_agent_id # Give it the new ID
+            cloned_parent.parent_id = parent_agent.agent_id # Set parent ID
+            cloned_parent.reset_round_state(initial_wealth) # Reset its state for the new generation
+            new_population.append(cloned_parent)
 
+    # population size is maintained
     if len(new_population) != population_size:
-         logging.warning(f"Evolution resulted in population size {len(new_population)}, but expected {population_size}. "
-                       "This might be due to errors in offspring creation during the loop.")
+         logging.warning(f"Evolution resulted in population size {len(new_population)}, but expected {population_size}. Adjusting population size.")
+         while len(new_population) < population_size and selected_parents: # selected_parents should not be empty if we reached here
+             parent_to_clone = random.choice(selected_parents)
+             cloned_offspring_id = str(uuid.uuid4())
+             clone = Agent(
+                 agent_id=cloned_offspring_id, model_id=parent_to_clone.model_id,
+                 initial_genome=copy.deepcopy(parent_to_clone.genome), initial_wealth=initial_wealth,
+                 parent_id=parent_to_clone.agent_id
+             )
+             new_population.append(clone)
+             logging.debug(f"Added clone of {parent_to_clone.agent_id} (as {cloned_offspring_id}) to meet population size.")
+         if len(new_population) > population_size:
+             new_population = new_population[:population_size]
+             logging.debug("Truncated new population to meet target size.")
 
-    logging.info(f"Evolution complete. New population size: {len(new_population)}.")
+    logging.info(f"Evolution complete using concurrent inspection. New population size: {len(new_population)}.")
     return new_population
