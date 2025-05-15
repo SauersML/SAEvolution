@@ -487,66 +487,121 @@ async def generate_agent_response(agent, scenario_data: dict, transcript: list, 
 
 def _extract_xml_tag_content(tag_name: str, xml_text: str, default_value: str | None = None) -> str | None:
     """
-    Helper to extract content from an XML-like tag, with lenient delimiters
-    and exclusion of content within <scratchpad>...</scratchpad> blocks.
+    Helper to extract content related to an XML-like tag.
+    For 'scratchpad', it extracts the entire block from the first occurrence
+    to a corresponding (potentially malformed) end, or to the end of the string.
+    Requires 'scratchpad' to appear on the first line for it to be processed.
 
-    Lenient delimiters mean '<' can be '.', and '>' can be '.'.
-    For example, "<tag>content</tag>", ".tag.content</tag>", "<tag.content./tag.",
-    or ".tag.content./tag." are all potentially parsable for the target tag.
+    For other tags, it extracts content *between* the tag and its closer,
+    after removing any 'scratchpad' blocks.
 
-    Content within any scratchpad block (e.g., "<scratchpad>text<target>ignored</target></scratchpad>"
-    or ".scratchpad.text./scratchpad.") is ignored for target tag searching.
-    The scratchpad block delimiters themselves also follow the lenient rule.
+    All matching is case-insensitive and lenient with delimiters like '<', '.', '>'.
     """
-    if not xml_text: # Handle empty or None xml_text
+    if not xml_text:
         return default_value
 
-    # 1. Define lenient patterns for scratchpad tags to remove their content first.
-    #    The pattern allows for attributes or other junk within the tag delimiters.
-    #    [^>.]*? matches any characters that are not '>' or '.', non-greedily.
-    #    This is applied between the 'scratchpad' name and its closing delimiter char ('>' or '.').
-    scratch_open_delimiters = r"[<.]"  # Matches '<' or '.'
-    scratch_close_delimiters = r"[>.]" # Matches '>' or '.'
-    
-    # Pattern for the opening scratchpad tag, e.g., <scratchpad ...> or .scratchpad ... .
-    scratch_open_pattern = rf"{scratch_open_delimiters}\s*scratchpad(?:[^>.]*?)\s*{scratch_close_delimiters}"
-    # Pattern for the closing scratchpad tag, e.g., </scratchpad> or ./scratchpad.
-    scratch_close_pattern = rf"{scratch_open_delimiters}\s*/\s*scratchpad\s*{scratch_close_delimiters}"
-    
-    # Full pattern to find and identify scratchpad blocks. Content (group 1) is non-greedy.
-    scratchpad_block_pattern_for_removal = rf"({scratch_open_pattern})(.*?)({scratch_close_pattern})"
-    
-    temp_xml_text = xml_text
-    cleaned_xml_text = ""
-    while True:
-        # Find the first scratchpad block from the current start of temp_xml_text
-        match_scratch = re.search(scratchpad_block_pattern_for_removal, temp_xml_text, re.DOTALL | re.IGNORECASE)
-        if match_scratch:
-            # Add text before the scratchpad block
-            cleaned_xml_text += temp_xml_text[:match_scratch.start()]
-            # Advance temp_xml_text past this entire matched scratchpad block
-            temp_xml_text = temp_xml_text[match_scratch.end():]
-        else:
-            # No more scratchpad blocks found, add the rest of the text
-            cleaned_xml_text += temp_xml_text
-            break
-    
-    # 2. Define lenient pattern for the target tag using the cleaned_xml_text
-    escaped_tag_name = re.escape(tag_name) # Safety for tag_name content
+    target_tag_name_lower = tag_name.lower()
 
-    # Delimiters for the target tag (can be '<' or '.')
-    tag_open_delimiters = r"[<.]"
-    tag_close_delimiters = r"[>.]"
-    
-    target_tag_pattern = rf"{tag_open_delimiters}\s*{escaped_tag_name}(?:[^>.]*?)\s*{tag_close_delimiters}(.*?)(?:{tag_open_delimiters}\s*/\s*{escaped_tag_name}\s*{tag_close_delimiters}|$)"
-    
-    match_target = re.search(target_tag_pattern, cleaned_xml_text, re.DOTALL | re.IGNORECASE)
-    
-    if match_target:
-        # group(1) is the (.*?) content part
-        return match_target.group(1).strip()
+    if target_tag_name_lower == "scratchpad":
+        # 1. Check if "scratchpad" (case-insensitive) is present on the first line.
+        first_line = xml_text.split('\n', 1)[0]
+        if not re.search(r"scratchpad", first_line, re.IGNORECASE):
+            logging.debug(f"_extract_xml_tag_content: 'scratchpad' not found on the first line for tag_name 'scratchpad'. Raw first line: '{first_line[:100]}'")
+            return default_value
+
+        # 2. Find the start of the first scratchpad-like tag structure.
+        # Regex: ([<.]?\s*) captures optional opening delimiter (e.g., '<', '.') and spaces.
+        #        (scratchpad) captures the word "scratchpad".
+        open_tag_match = re.search(r"([<.]?\s*)(scratchpad)", xml_text, re.IGNORECASE)
+        if not open_tag_match:
+            # This case should be rare if the first-line check passed and was reasonably aligned with this regex.
+            logging.debug(f"_extract_xml_tag_content: Could not find a starting 'scratchpad' pattern for tag_name 'scratchpad' despite passing first-line check. Raw text: '{xml_text[:200]}'")
+            return default_value
         
-    return default_value
+        start_extraction_index = open_tag_match.start(1)  # Start of the captured opening delimiter part.
+        search_pos_for_end_tag = open_tag_match.end(2)  # Position right after the word "scratchpad" in the opening tag.
+
+        # 3. Find the end of the scratchpad block.
+        # Attempt to find a structured closing tag first.
+        # Regex: ([<.\/]\s*) captures delimiter like '<', '.', '/'.
+        #        (/\s*)? optionally captures a slash if separated by space e.g. '< / scratchpad'.
+        #        (scratchpad) captures the word "scratchpad".
+        #        (\s*[>.]?) captures optional space and closing delimiter like '>' or '.'.
+        # Search from search_pos_for_end_tag to avoid re-matching the opening tag immediately.
+        structured_close_match = re.search(r"([<.\/]\s*)(/\s*)?(scratchpad)(\s*[>.]?)", xml_text[search_pos_for_end_tag:], re.IGNORECASE)
+        
+        if structured_close_match:
+            # end_extraction_index is after the matched closing tag part, relative to the whole xml_text.
+            end_extraction_index = search_pos_for_end_tag + structured_close_match.end(0)
+            logging.debug(f"_extract_xml_tag_content (scratchpad): Found structured closing tag. Extraction from index {start_extraction_index} to {end_extraction_index}.")
+            return xml_text[start_extraction_index:end_extraction_index]
+
+        # If no structured closing tag, check for a simple "scratchpad" word occurrence at/near the end as a malformed closer.
+        # Find all occurrences of "scratchpad" after the opening one.
+        all_later_scratchpad_occurrences = []
+        for m in re.finditer(r"scratchpad", xml_text[search_pos_for_end_tag:], re.IGNORECASE):
+            # Store start index relative to original xml_text
+            all_later_scratchpad_occurrences.append(search_pos_for_end_tag + m.start()) 
+        
+        if all_later_scratchpad_occurrences:
+            last_occurrence_start_index = all_later_scratchpad_occurrences[-1]
+            
+            # Check if this last "scratchpad" word (optionally followed by > or .) is near the end of the string.
+            # Regex for malformed end: (scratchpad) followed by optional space and > or .
+            potential_malformed_end_tag_match = re.match(r"(scratchpad)(\s*[>.]?)", xml_text[last_occurrence_start_index:], re.IGNORECASE)
+            if potential_malformed_end_tag_match:
+                end_of_this_malformed_tag = last_occurrence_start_index + potential_malformed_end_tag_match.end(0)
+                
+                # Heuristic: consider it a closer if it's in the last part of the string.
+                # Define "near the end" as being within a certain number of characters
+                chars_after_malformed_end = len(xml_text) - end_of_this_malformed_tag
+                threshold_chars = 1000
+                if chars_after_malformed_end < threshold_chars :
+                    logging.debug(f"_extract_xml_tag_content (scratchpad): Found malformed closing 'scratchpad' near end. Extraction from index {start_extraction_index} to {end_of_this_malformed_tag}.")
+                    return xml_text[start_extraction_index:end_of_this_malformed_tag]
+
+        # If no clear structured or convincing malformed closing tag is found, extract to the end of the string.
+        logging.debug(f"_extract_xml_tag_content (scratchpad): No clear closing tag found. Extracting from start of first tag (index {start_extraction_index}) to end of string.")
+        return xml_text[start_extraction_index:]
+
+    else: # Logic for tags other than "scratchpad"
+        # 1. Remove any scratchpad blocks first to avoid interference.
+        temp_xml_text_for_others = xml_text
+        cleaned_xml_text_for_others = ""
+        
+        scratch_open_delimiters_others = r"[<.]"
+        scratch_close_delimiters_others = r"[>.]"
+        scratch_open_pattern_others = rf"{scratch_open_delimiters_others}\s*scratchpad(?:[^>.]*?)\s*{scratch_close_delimiters_others}"
+        scratch_close_pattern_others = rf"{scratch_open_delimiters_others}\s*/\s*scratchpad\s*{scratch_close_delimiters_others}"
+        scratchpad_block_pattern_for_removal_others = rf"({scratch_open_pattern_others})(.*?)({scratch_close_pattern_others})"
+        
+        current_pos_others = 0
+        for match_scratch in re.finditer(scratchpad_block_pattern_for_removal_others, temp_xml_text_for_others, re.DOTALL | re.IGNORECASE):
+            cleaned_xml_text_for_others += temp_xml_text_for_others[current_pos_others:match_scratch.start()]
+            current_pos_others = match_scratch.end()
+        cleaned_xml_text_for_others += temp_xml_text_for_others[current_pos_others:]
+        
+        # 2. Define lenient pattern for the target tag to extract content *between* delimiters.
+        escaped_tag_name = re.escape(tag_name) 
+        tag_open_delimiters_others = r"[<.]"
+        tag_close_delimiters_others = r"[>.]"
+        # Pattern: <tag_name ...> (content_group) </tag_name ...> or end of string
+        # (?:[^>.]*?) allows for attributes or junk within the opening tag delimiters.
+        target_tag_pattern_others = (
+            rf"{tag_open_delimiters_others}\s*{escaped_tag_name}(?:[^>.]*?)\s*{tag_close_delimiters_others}"  # Opening tag part
+            r"(.*?)"  # Group 1: The content to extract (non-greedy)
+            r"(?:"  # Start of non-capturing group for closing tag or end of string
+            rf"{tag_open_delimiters_others}\s*/\s*{escaped_tag_name}\s*{tag_close_delimiters_others}"  # Closing tag
+            r"|$"  # OR end of string
+            r")"
+        )
+        
+        match_target = re.search(target_tag_pattern_others, cleaned_xml_text_for_others, re.DOTALL | re.IGNORECASE)
+        
+        if match_target:
+            return match_target.group(1).strip() # group(1) is the content between the tags
+            
+        return default_value
 
 async def adjudicate_interaction(scenario_info: dict, transcript_with_ids: str, config: dict) -> tuple[str | None, str | None, str | None, str | None, str | None, str | None, str | None, str | None]:
     """
