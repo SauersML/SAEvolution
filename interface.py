@@ -384,11 +384,10 @@ async def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, 
             logging.error(f"Raw content at time of critical error (Agent {proposer_agent.agent_id}, async): {llm_raw_output_text[:1000]}...")
         return None, final_prompt_text
 
-    
 
-def generate_agent_response(agent, scenario_data: dict, transcript: list, current_role: str, config: dict) -> tuple[str | None, str | None]:
+async def generate_agent_response(agent, scenario_data: dict, transcript: list, current_role: str, config: dict) -> tuple[str | None, str | None]:
     """
-    Generates an agent's response in a game turn.
+    Generates an agent's response asynchronously in a game turn.
     Returns:
         A tuple: (str: agent's response text or None on failure,
                   str: The prompt_text used for generation or None on early failure)
@@ -399,10 +398,10 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         (agent, Agent), (scenario_data, dict), (transcript, list),
         (current_role, str), (config, dict)
     ]):
-        logging.error(f"generate_agent_response: Invalid argument types provided. Agent: {type(agent)}, Scenario: {type(scenario_data)}, etc.")
+        logging.error(f"generate_agent_response_async: Invalid argument types provided. Agent: {type(agent)}, Scenario: {type(scenario_data)}, etc.")
         return None, None
 
-    client = get_goodfire_client(config)
+    client = get_goodfire_async_client(config) # Use async client
     gen_config = config.get('generation', {}).get('response', {})
     model_id = agent.model_id
     scenario_text = scenario_data.get('scenario_text', '[Scenario Text Missing from input scenario_data]')
@@ -411,7 +410,6 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
     if prompt_template_str is None:
         err_msg = "Configuration error: 'generation.response.prompt_template' is missing from config.yaml."
         logging.critical(err_msg + f" (Agent: {agent.agent_id}, Role: {current_role})")
-        # Return None for response_text and None for prompt_text, signaling failure.
         return None, None
 
     max_tokens = gen_config.get('max_tokens', 150)
@@ -419,48 +417,43 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
     api_retry_config = config.get('api_retries', {})
 
     history_lines = []
-    for msg in transcript: # Iterate safely
+    for msg in transcript:
         role = msg.get('role', 'UnknownRole')
         content = msg.get('content', '[empty_content]')
         history_lines.append(f"{role}: {content}")
     history_text = "\n".join(history_lines) if history_lines else "[No conversation history yet]"
 
-    prompt_text_for_llm = None # This will hold the fully formatted prompt sent to LLM.
+    prompt_text_for_llm = None
     try:
-        # Use the validated prompt_template_str from config.
         prompt_text_for_llm = prompt_template_str.format(scenario=scenario_text, role=current_role, history=history_text)
     except KeyError as ke:
-        logging.error(f"Missing key '{ke}' in prompt_template (from config) for agent response. Template: '{prompt_template_str}' Data: scenario_text_present={bool(scenario_text)}, role_present={bool(current_role)}, history_present={bool(history_text)}")
-        # Return None for response_text, but return the problematic template string for debugging.
+        logging.error(f"Missing key '{ke}' in prompt_template for async agent response. Template: '{prompt_template_str}'")
         return None, prompt_template_str 
 
     variant = goodfire.Variant(model_id)
     raw_genome_from_agent = agent.genome
     genome_for_goodfire_api = {}
-    # Transform the agent's genome (dict of dicts) to the flat dict expected by goodfire.Variant().set()
     if isinstance(raw_genome_from_agent, dict):
         for feature_uuid, feature_data_dict in raw_genome_from_agent.items():
             if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
-                # genome format: {'activation': float, 'label': str}
                 genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
             elif isinstance(feature_data_dict, (int, float)):
-                # Fallback for potential old genome format: float activation value
-                logging.debug(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response appears to be in old format. Using it directly.")
+                logging.debug(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response_async (old format). Using directly.")
                 genome_for_goodfire_api[feature_uuid] = float(feature_data_dict)
             else:
-                logging.warning(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response has unexpected structure: {feature_data_dict}. Skipping.")
+                logging.warning(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response_async (unexpected structure): {feature_data_dict}. Skipping.")
 
-    if genome_for_goodfire_api: # Check if the transformed genome has any features to set
+    if genome_for_goodfire_api:
         try:
-            variant.set(genome_for_goodfire_api)
+            variant.set(genome_for_goodfire_api) # Synchronous local operation
         except Exception as e:
-            logging.error(f"Error setting transformed variant edits for agent {agent.agent_id} during response generation: {e}", exc_info=True)
+            logging.error(f"Error setting variant edits for agent {agent.agent_id} during async response generation: {e}", exc_info=True)
             
     messages = [{"role": "user", "content": prompt_text_for_llm}]
 
     try:
-        logging.debug(f"Attempting agent response for {agent.agent_id} ({current_role}). Prompt: {prompt_text_for_llm[:500]}...")
-        response = _execute_api_call(
+        logging.debug(f"Attempting async agent response for {agent.agent_id} ({current_role}). Prompt: {prompt_text_for_llm[:500]}...")
+        response = await _execute_api_call_async( # Use await and async version
             client.chat.completions.create,
             messages=messages,
             model=variant,
@@ -471,37 +464,26 @@ def generate_agent_response(agent, scenario_data: dict, transcript: list, curren
         )
 
         if not response or not response.choices or not isinstance(response.choices[0].message, dict):
-             logging.error(f"Invalid or empty response structure from API for agent {agent.agent_id} response.")
-             return None, prompt_text_for_llm
+            logging.error(f"Invalid or empty response structure from async API for agent {agent.agent_id} response.")
+            return None, prompt_text_for_llm
 
         response_text = response.choices[0].message.get('content', '').strip()
-        if not response_text: # Allow empty responses if the model generates them, but log it.
-             logging.info(f"Agent {agent.agent_id} generated an empty string response (raw output was empty or whitespace).")
-             # return None, prompt_text_for_llm # DECISION: Is empty string a valid response or a failure? Let's treat it as valid for now.
+        if not response_text:
+            logging.info(f"Agent {agent.agent_id} generated an empty string response (async).")
 
-        logging.debug(f"Response generated by agent {agent.agent_id}: '{response_text[:100]}...'")
+        logging.debug(f"Async response generated by agent {agent.agent_id}: '{response_text[:100]}...'")
         return response_text, prompt_text_for_llm
 
     except TimeoutError:
-         logging.error(f"Timeout generating response for agent {agent.agent_id} after all retries.")
-         return None, prompt_text_for_llm
-    except goodfire_exceptions.GoodfireBaseException as e: # Catching the base Goodfire exception
-        logging.error(f"Goodfire API error generating response for agent {agent.agent_id}: {e}", exc_info=True)
+        logging.error(f"Timeout generating async response for agent {agent.agent_id} after all retries.")
+        return None, prompt_text_for_llm
+    except goodfire_exceptions.GoodfireBaseException as e:
+        logging.error(f"Goodfire API error generating async response for agent {agent.agent_id}: {e}", exc_info=True)
         return None, prompt_text_for_llm
     except Exception as e:
-        logging.critical(f"Unexpected critical error generating response for agent {agent.agent_id}: {e}", exc_info=True)
+        logging.critical(f"Unexpected critical error generating async response for agent {agent.agent_id}: {e}", exc_info=True)
         return None, prompt_text_for_llm
 
-    # 3. Adjudication
-    logging.debug(f"Game {game_id}: Requesting adjudication.")
-    adjudication_final_text, adjudication_llm_prompt = adjudicate_interaction(
-        scenario_info, current_transcript, config
-    )
-    game_details_dict["adjudication_result"] = adjudication_final_text
-    game_details_dict["adjudication_prompt"] = adjudication_llm_prompt
-
-    if adjudication_final_text not in ['Role A Wins', 'Role B Wins', 'Tie', 'error']:
-        game_details_dict["adjudication_raw_llm_output"] = adjudication_final_text
 
 def perform_contrastive_analysis(dataset_1: list, dataset_2: list, agent_variant_or_model_id, top_k: int, config: dict) -> tuple[list | None, list | None]:
     """
