@@ -370,11 +370,23 @@ async def run_simulation(args):
                 break
             logging.info(f"Calculated fitness for Generation {gen_num}.")
             
+            # Initialize a global feature cache for this simulation run if it's the first generation,
+            # or ensure it's passed through if resuming (though current resume logic doesn't explicitly carry it over generations,
+            # it would be re-initialized on resume; for a truly persistent cache across resumes,
+            # it would need to be saved/loaded in checkpoints).
+            # For this optimization, it primarily serves to cache within a single run/generation processing.
+            if 'global_feature_cache' not in locals() and gen_num == start_generation:
+                global_feature_cache = {}
+            elif 'global_feature_cache' not in locals(): # Should exist if not first gen of a new run
+                logging.warning("Global feature cache not found unexpectedly, re-initializing. This might happen if resuming without full state persistence of the cache itself.")
+                global_feature_cache = {}
+
             next_population = await evolve_population(
                 population_after_round, 
                 fitness_scores_list, 
                 config,
-                generation_game_details 
+                generation_game_details,
+                global_feature_cache # Pass the cache to the evolution function
             )
             if not isinstance(next_population, list) or len(next_population) != len(population_after_round): 
                 logging.error(f"Population state invalid after evolution in Generation {gen_num}. Expected {len(population_after_round)} agents, got {len(next_population)}. Aborting.")
