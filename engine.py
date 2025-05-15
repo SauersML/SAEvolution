@@ -517,8 +517,9 @@ async def run_game_round(population: list[Agent], config: dict, run_id: str, gen
             max_iters_pairing = games_per_agent_target * num_agents * 2 
 
         actual_games_played_this_round_idx = 0 # For unique game indexing in _play_single_game
-        for iter_num in range(max_iters_pairing):
-            tasks_for_this_pass: list[asyncio.Task] = [] # Initialize list to hold game tasks for the current pass
+    for iter_num in range(max_iters_pairing):
+            # tasks_for_this_pass will hold coroutine objects returned by _play_single_game
+            tasks_for_this_pass: list[Coroutine[Any, Any, dict]] = [] 
             # Check if all agents have met their target game count
             if all(count >= games_per_agent_target for count in games_played_this_round_count.values()):
                 logging.info(f"All agents have met or exceeded target of {games_per_agent_target} games by pairing iteration {iter_num + 1}.")
