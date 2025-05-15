@@ -455,7 +455,8 @@ async def evolve_population(
     population: list[Agent], 
     fitness_scores: list[float], 
     config: dict,
-    all_games_this_generation: list[dict] # New parameter
+    all_games_this_generation: list[dict],
+    global_feature_cache: dict # parameter for the global feature metadata cache
 ) -> list[Agent]:
     """
     Evolves the population to create a new generation of agents.
