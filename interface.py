@@ -19,6 +19,7 @@ import hashlib
 import json
 import copy
 import re
+import asyncio
 import uuid # For unique seed in scenario generation
 
 _client_instance = None
@@ -116,9 +117,10 @@ def get_goodfire_client(config: dict) -> goodfire.Client:
         _last_client_config_hash = None
         raise RuntimeError("Could not initialize Goodfire client.") from e
 
-def _execute_api_call(api_call_func: callable, *args, **kwargs):
+async def _execute_api_call_async(api_call_func: callable, *args, **kwargs):
     """
-    Executes an API call with retry logic for specified errors.
+    Executes an asynchronous API call with retry logic for specified errors.
+    The api_call_func is expected to be an awaitable (e.g., a method of AsyncClient).
     """
     retry_config = kwargs.pop('retry_config', {})
     max_retries = retry_config.get('max_retries', 3)
@@ -126,78 +128,76 @@ def _execute_api_call(api_call_func: callable, *args, **kwargs):
     backoff_factor = retry_config.get('backoff_factor', 2.0)
 
     if not callable(api_call_func):
-         raise TypeError("api_call_func must be callable.")
+        raise TypeError("api_call_func must be callable for async execution.")
 
     current_delay = initial_delay
     last_exception = None
 
     for attempt in range(max_retries):
         try:
-            result = api_call_func(*args, **kwargs)
+            result = await api_call_func(*args, **kwargs) # Await the API call
             return result
         except goodfire_exceptions.APIStatusError as e: # Catch HTTP status errors from Goodfire SDK
             status_code = e.status_code
             if status_code in [429, 500, 502, 503, 504]: # Retriable HTTP status codes
                 logging.warning(
-                    f"Retriable API Status Error (Status: {status_code}) on attempt {attempt + 1}/{max_retries} "
+                    f"Retriable API Status Error (Status: {status_code}) on async attempt {attempt + 1}/{max_retries} "
                     f"for {getattr(api_call_func, '__name__', 'API call')}. Retrying in {current_delay:.2f}s. Error: {e}"
                 )
                 last_exception = e
             else:
                 logging.error(
-                    f"Non-retriable API Status Error (Status: {status_code}) for "
+                    f"Non-retriable API Status Error (Status: {status_code}) for async "
                     f"{getattr(api_call_func, '__name__', 'API call')}: {e}."
                 )
                 raise # Re-raise non-retriable Goodfire API status errors
         except goodfire_exceptions.APITimeoutError as e: # Catch specific timeout errors from Goodfire SDK
             logging.warning(
-                f"Goodfire API Timeout Error on attempt {attempt + 1}/{max_retries} "
+                f"Goodfire API Timeout Error on async attempt {attempt + 1}/{max_retries} "
                 f"for {getattr(api_call_func, '__name__', 'API call')}. Retrying in {current_delay:.2f}s. Error: {e}"
             )
             last_exception = e
         except goodfire_exceptions.GoodfireBaseException as e: # Catch other Goodfire-specific base errors
-            # Decide if generic GoodfireBaseExceptions are retriable. For now, let's assume they might be.
             logging.warning(
-                f"Goodfire API Base Error ({type(e).__name__}) on attempt {attempt + 1}/{max_retries} "
+                f"Goodfire API Base Error ({type(e).__name__}) on async attempt {attempt + 1}/{max_retries} "
                 f"for {getattr(api_call_func, '__name__', 'API call')}. Retrying in {current_delay:.2f}s. Error: {e}"
             )
             last_exception = e
-        except requests.exceptions.Timeout as e: # Catch timeouts from the underlying requests library
+        except requests.exceptions.Timeout as e: # Catch timeouts from the underlying requests library (might be less common with pure async client)
             logging.warning(
-                f"HTTP Request Timeout on attempt {attempt + 1}/{max_retries} for "
+                f"HTTP Request Timeout on async attempt {attempt + 1}/{max_retries} for "
                 f"{getattr(api_call_func, '__name__', 'API call')}. Retrying in {current_delay:.2f}s. Error: {e}"
             )
             last_exception = e
-        except requests.exceptions.RequestException as e: # Catch other network errors from requests library
-             logging.warning(
-                f"HTTP Request Exception on attempt {attempt + 1}/{max_retries} for "
+        except requests.exceptions.RequestException as e: # Catch other network errors (might be less common with pure async client)
+            logging.warning(
+                f"HTTP Request Exception on async attempt {attempt + 1}/{max_retries} for "
                 f"{getattr(api_call_func, '__name__', 'API call')}. Retrying in {current_delay:.2f}s. Error: {e}"
             )
-             last_exception = e
+            last_exception = e
         except Exception as e: # Catch any other unexpected errors
             logging.error(
-                f"Unexpected error during API call attempt {attempt + 1}/{max_retries} for "
+                f"Unexpected error during async API call attempt {attempt + 1}/{max_retries} for "
                 f"{getattr(api_call_func, '__name__', 'API call')}: {e}", exc_info=True
             )
             last_exception = e
             if attempt == max_retries - 1: # If it's the last attempt, re-raise
                 raise
 
-        time.sleep(current_delay)
+        await asyncio.sleep(current_delay) # Use asyncio.sleep for async context
         current_delay *= backoff_factor
         # Add a small jitter to the delay
         current_delay += random.uniform(0, initial_delay * 0.1)
 
-    logging.error(f"API call {getattr(api_call_func, '__name__', 'API call')} failed after {max_retries} retries.")
-    # Re-raise the last exception that occurred, or a generic TimeoutError if last_exception is None
+    logging.error(f"Async API call {getattr(api_call_func, '__name__', 'API call')} failed after {max_retries} retries.")
     if last_exception:
-        raise TimeoutError(f"API call failed after {max_retries} retries.") from last_exception
-    else: # Should not happen if loop runs at least once and fails
-        raise TimeoutError(f"API call failed after {max_retries} retries, but no specific exception was captured.")
+        raise TimeoutError(f"Async API call failed after {max_retries} retries.") from last_exception
+    else:
+        raise TimeoutError(f"Async API call failed after {max_retries} retries, but no specific exception was captured.")
 
-def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | None]:
+async def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | None]:
     """
-    Generates a game scenario using the proposer agent and configuration.
+    Generates a game scenario asynchronously using the proposer agent and configuration.
     Employs lenient parsing for XML-like tags, focusing on extracting content
     between expected tag pairs in sequence, while tolerating junk outside
     and between these pairs.
@@ -209,13 +209,13 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     from manager import Agent # Local import to avoid circular dependency issues
 
     if not isinstance(proposer_agent, Agent):
-        logging.error("generate_scenario: Invalid proposer_agent provided (must be an Agent instance).")
+        logging.error("generate_scenario_async: Invalid proposer_agent provided (must be an Agent instance).")
         return None, None
     if not isinstance(config, dict):
-        logging.error("generate_scenario: Invalid config provided (must be a dictionary).")
+        logging.error("generate_scenario_async: Invalid config provided (must be a dictionary).")
         return None, None
 
-    client = get_goodfire_client(config)
+    client = get_goodfire_async_client(config) # Use async client
     gen_config = config.get('generation', {}).get('scenario', {})
     model_id = proposer_agent.model_id
     
@@ -223,7 +223,6 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     if prompt_text_template is None:
         err_msg = "Configuration error: 'generation.scenario.prompt' is missing from config.yaml."
         logging.critical(err_msg + f" (Agent: {proposer_agent.agent_id})")
-        # Return None for scenario_info and None for prompt_text, signaling failure.
         return None, None
 
     max_tokens = gen_config.get('max_tokens', 1000)
@@ -231,48 +230,36 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
     api_retry_config = config.get('api_retries', {})
 
     diversification_seed = f"agent_id:{proposer_agent.agent_id}_call_id:{uuid.uuid4().hex[:8]}"
-    # final_prompt_text will be used for the actual API call and returned if an API error occurs.
-    # It is constructed here using the validated prompt_text_template.
     final_prompt_text = f"{prompt_text_template}\n[{diversification_seed}]"
 
     variant = goodfire.Variant(model_id)
     raw_genome_from_proposer = proposer_agent.genome
     genome_for_goodfire_api = {}
-    # Transform the agent's genome (dict of dicts) to the flat dict expected by goodfire.Variant().set()
     if isinstance(raw_genome_from_proposer, dict):
         for feature_uuid, feature_data_dict in raw_genome_from_proposer.items():
             if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
-                # genome format: {'activation': float, 'label': str}
                 genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
             elif isinstance(feature_data_dict, (int, float)):
-                # This case might occur if loading very old data or if there's mixed format.
-                logging.debug(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario appears to be in old format (direct activation value). Using it directly.")
+                logging.debug(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario_async appears to be in old format. Using it directly.")
                 genome_for_goodfire_api[feature_uuid] = float(feature_data_dict)
             else:
-                logging.warning(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario has unexpected structure: {feature_data_dict}. Skipping this feature for Goodfire variant.")
+                logging.warning(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario_async has unexpected structure: {feature_data_dict}. Skipping.")
 
-    if genome_for_goodfire_api: # Check if the transformed genome has any features to set
+    if genome_for_goodfire_api:
         try:
-            variant.set(genome_for_goodfire_api)
+            variant.set(genome_for_goodfire_api) # This is a synchronous operation on a local object
         except Exception as e:
-            # Log error specific to setting the transformed genome
-            logging.error(f"Error setting transformed variant edits for agent {proposer_agent.agent_id} in generate_scenario: {e}", exc_info=True)
+            logging.error(f"Error setting transformed variant edits for agent {proposer_agent.agent_id} in generate_scenario_async: {e}", exc_info=True)
 
     messages = [{"role": "user", "content": final_prompt_text}]
     llm_raw_output_text = None 
-
-    # Define expected tags locally. XML tags are case-sensitive.
     expected_tag_sequence = ["context", "roles", "objectives", "win_criteria", "tie_criteria", "proposer_role"]
 
-    # The 'final_prompt_text' variable, used for the API call and error reporting, 
-    # is already defined earlier if prompt_text_template was successfully loaded.
-    # 'messages' is also defined earlier using this 'final_prompt_text'.
-
     try:
-        logging.debug(f"Attempting scenario generation for agent {proposer_agent.agent_id} with prompt ending: ...{final_prompt_text[-100:]}")
-        response = _execute_api_call(
+        logging.debug(f"Attempting async scenario generation for agent {proposer_agent.agent_id} with prompt ending: ...{final_prompt_text[-100:]}")
+        response = await _execute_api_call_async( # Use await and async version
             client.chat.completions.create,
-            messages=messages, # messages was formed using the validated final_prompt_text
+            messages=messages,
             model=variant,
             max_completion_tokens=max_tokens,
             temperature=temperature,
@@ -281,142 +268,92 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
         )
 
         if not response or not response.choices or not isinstance(response.choices[0].message, dict):
-             logging.error(f"Invalid or empty response structure received from API for scenario generation (Agent: {proposer_agent.agent_id}).")
-             # Return the prompt that was attempted, even if the response was bad.
-             return None, final_prompt_text
+            logging.error(f"Invalid or empty response structure received from async API for scenario generation (Agent: {proposer_agent.agent_id}).")
+            return None, final_prompt_text
 
         llm_raw_output_text = response.choices[0].message.get('content', '')
-        logging.debug(f"Raw LLM output for scenario (Agent {proposer_agent.agent_id}):\n{llm_raw_output_text}")
+        logging.debug(f"Raw LLM output for async scenario (Agent {proposer_agent.agent_id}):\n{llm_raw_output_text}")
 
         if not llm_raw_output_text.strip():
-             logging.warning(f"Empty content received from API for scenario generation (Agent: {proposer_agent.agent_id}).")
-             # Return the prompt that was attempted.
-             return None, final_prompt_text
+            logging.warning(f"Empty content received from async API for scenario generation (Agent: {proposer_agent.agent_id}).")
+            return None, final_prompt_text
 
         tags_content = {}
-        # Use the raw output directly for extremely lenient parsing, ignore complex pre-cleaning/slicing.
         search_text = llm_raw_output_text 
-        current_search_position = 0 # Tracks our position in search_text
+        current_search_position = 0
         parsing_successful = True
 
         for i, tag_name_to_find in enumerate(expected_tag_sequence):
-            # 1. Find the opening marker for the current tag.
-            #    This is the tag name itself, treated as a whole word (case-insensitive).
-            #    We allow optional non-alphanumeric characters (like '<', '>', '.') before/after it.
-            #    The regex finds `junk + tag_name + junk_until_content_starts`.
-            #    Pattern: (junk symbols)? TAG_NAME (junk symbols like >)? CAPTURE_GROUP_FOR_JUNK_AND_TAG
-            #    We want to find the end of this entire opening marker pattern.
-            open_marker_regex_str = r"\b" + re.escape(tag_name_to_find) + r"\b" # \b for whole word
-            # Search for this tag name, possibly preceded by < or . and followed by >
-            # More lenient: look for the tag name, then account for a possible ">" or other chars before content.
-            # Example: "<context>", "context>", ".context>" should all find "context" and advance past ">"
-            
-            # Find the tag name itself.
-            # Compile the regex for searching with a starting position.
+            open_marker_regex_str = r"\b" + re.escape(tag_name_to_find) + r"\b"
             compiled_open_marker_regex = re.compile(open_marker_regex_str, re.IGNORECASE)
             open_tag_name_match = compiled_open_marker_regex.search(search_text, pos=current_search_position)
 
             if not open_tag_name_match:
-                logging.warning(f"Scenario parsing: Start of tag '{tag_name_to_find}' not found. Agent: {proposer_agent.agent_id}. Search text from pos {current_search_position}: '{search_text[current_search_position:current_search_position+200]}...'")
+                logging.warning(f"Async scenario parsing: Start of tag '{tag_name_to_find}' not found. Agent: {proposer_agent.agent_id}.")
                 parsing_successful = False
                 break
             
-            # Content starts after the matched tag name and any immediately following non-content characters (like '>')
-            # Advance past the tag name itself.
             content_start_index = open_tag_name_match.end()
             optional_gt_match = re.match(r"\s*(?:>)?", search_text[content_start_index:])
             if optional_gt_match:
                 content_start_index += optional_gt_match.end()
 
-            # 2. Determine the end of the content for tag_name_to_find.
-            content_end_index = len(search_text) # Default to end of string if no other delimiter found
+            content_end_index = len(search_text)
             found_explicit_closer = False
-
-            # Option A: Look for the specific closing tag "/tag_name_to_find"
-            # Example: "</context>", "/context>", "/context"
             close_marker_regex_str = r"(?:<)?\s*/\s*\b" + re.escape(tag_name_to_find) + r"\b"
-            # Compile the regex for searching with a starting position.
             compiled_close_marker_regex = re.compile(close_marker_regex_str, re.IGNORECASE)
-            close_tag_match = compiled_close_marker_regex.search(
-                search_text,
-                pos=content_start_index # Search after the opening tag's content starts
-            )
+            close_tag_match = compiled_close_marker_regex.search(search_text, pos=content_start_index)
+            
             if close_tag_match:
-                content_end_index = close_tag_match.start() # Content ends before the closing marker starts
-                # Advance current_search_position past this closing tag for the next iteration
-                # Find the full extent of the closing marker (e.g. including a '>')
-                # Compile the regex for searching with a starting position.
-                compiled_full_closing_marker_regex = re.compile(close_marker_regex_str + r"\s*(?:>)?", re.IGNORECASE) # Add optional '>'
-                full_closing_marker_match = compiled_full_closing_marker_regex.search(
-                    search_text,
-                    pos=close_tag_match.start() # Start search from where the basic closer was found
-                )
+                content_end_index = close_tag_match.start()
+                compiled_full_closing_marker_regex = re.compile(close_marker_regex_str + r"\s*(?:>)?", re.IGNORECASE)
+                full_closing_marker_match = compiled_full_closing_marker_regex.search(search_text, pos=close_tag_match.start())
                 current_search_position = full_closing_marker_match.end() if full_closing_marker_match else close_tag_match.end()
                 found_explicit_closer = True
             
-            # Option B: If not the last tag, look for the start of the *next* tag in sequence.
-            # The content ends before the next tag's opening marker if that comes first.
             if i + 1 < len(expected_tag_sequence):
                 next_tag_name = expected_tag_sequence[i+1]
-                # This regex looks for an opening angle bracket '<', followed by optional whitespace,
-                # then the tag name, and then ensures it's followed by either a closing angle bracket '>' or whitespace.
-                # This makes it more specific to finding an actual tag opening rather than just the tag name as a word.
                 next_tag_open_marker_regex_str = r"<\s*" + re.escape(next_tag_name) + r"(?:>|\s)"
-                
-                # Compile the regex for searching with a starting position.
                 compiled_next_tag_open_marker_regex = re.compile(next_tag_open_marker_regex_str, re.IGNORECASE)
-                next_tag_open_name_match = compiled_next_tag_open_marker_regex.search(
-                    search_text,
-                    pos=content_start_index # Search after current tag's content starts
-                )
+                next_tag_open_name_match = compiled_next_tag_open_marker_regex.search(search_text, pos=content_start_index)
                 
                 if next_tag_open_name_match:
-                    # If next tag starts before the current tag's explicit closer (or if closer wasn't found)
                     if not found_explicit_closer or next_tag_open_name_match.start() < content_end_index:
                         content_end_index = next_tag_open_name_match.start()
-                        # For the next iteration, start searching from where this next tag was found
                         current_search_position = next_tag_open_name_match.start() 
             
-            # Extract content
             extracted_content = search_text[content_start_index:content_end_index].strip()
             tags_content[tag_name_to_find] = extracted_content
-            logging.debug(f"Scenario parsing: Tag '{tag_name_to_find}' -> '{extracted_content[:100]}...'. Next search pos: {current_search_position}")
+            logging.debug(f"Async scenario parsing: Tag '{tag_name_to_find}' -> '{extracted_content[:100]}...'. Next search pos: {current_search_position}")
 
             if not found_explicit_closer and (i + 1 >= len(expected_tag_sequence)): 
-                # If it was the last tag and no explicit closer, we took till end of string.
-                # No more text to parse.
                 break 
             
             if current_search_position >= len(search_text) and i + 1 < len(expected_tag_sequence):
-                # Ran out of text before finding all tags
-                logging.warning(f"Scenario parsing: Ran out of text after parsing '{tag_name_to_find}', but more tags expected. Agent: {proposer_agent.agent_id}.")
-                parsing_successful = False # Mark as failure if not all tags found
+                logging.warning(f"Async scenario parsing: Ran out of text after parsing '{tag_name_to_find}'. Agent: {proposer_agent.agent_id}.")
+                parsing_successful = False
                 break
 
-
-        # Final check: all expected tags were found
         if len(tags_content) != len(expected_tag_sequence):
-            logging.warning(f"Scenario parsing: Failed to extract all {len(expected_tag_sequence)} expected tags. Found {len(tags_content)}: {list(tags_content.keys())}. Agent: {proposer_agent.agent_id}. Raw text: '{llm_raw_output_text[:500]}...'")
+            logging.warning(f"Async scenario parsing: Failed to extract all {len(expected_tag_sequence)} tags. Found {len(tags_content)}. Agent: {proposer_agent.agent_id}.")
             parsing_successful = False
 
         if not parsing_successful:
             return None, final_prompt_text
 
-
-        # Validate content constraints
         if "objective" not in tags_content.get("objectives", "").lower():
-            logging.warning(f"Keyword 'objective' not found in <objectives> content (Agent: {proposer_agent.agent_id}). Content: '{tags_content.get('objectives', '')}'")
+            logging.warning(f"Keyword 'objective' not found in <objectives> (async). Agent: {proposer_agent.agent_id}.")
             return None, final_prompt_text
         if "win criteria" not in tags_content.get("win_criteria", "").lower():
-            logging.warning(f"Phrase 'win criteria' not found in <win_criteria> content (Agent: {proposer_agent.agent_id}). Content: '{tags_content.get('win_criteria', '')}'")
+            logging.warning(f"Phrase 'win criteria' not found in <win_criteria> (async). Agent: {proposer_agent.agent_id}.")
             return None, final_prompt_text
         if "tie criteria" not in tags_content.get("tie_criteria", "").lower():
-            logging.warning(f"Phrase 'tie criteria' not found in <tie_criteria> content (Agent: {proposer_agent.agent_id}). Content: '{tags_content.get('tie_criteria', '')}'")
+            logging.warning(f"Phrase 'tie criteria' not found in <tie_criteria> (async). Agent: {proposer_agent.agent_id}.")
             return None, final_prompt_text
         
         proposer_role_text = tags_content.get("proposer_role", "")
         if proposer_role_text not in ["Role A", "Role B"]:
-            logging.warning(f"Invalid content for <proposer_role>: '{proposer_role_text}'. Expected 'Role A' or 'Role B'. (Agent: {proposer_agent.agent_id})")
+            logging.warning(f"Invalid content for <proposer_role> (async): '{proposer_role_text}'. Agent: {proposer_agent.agent_id}.")
             return None, final_prompt_text
 
         assembled_scenario_text = (
@@ -426,28 +363,28 @@ def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, str | 
             f"Win Criteria:\n{tags_content['win_criteria']}\n\n"
             f"Tie Criteria:\n{tags_content['tie_criteria']}"
         )
-        logging.debug(f"Assembled scenario text (Agent {proposer_agent.agent_id}):\n{assembled_scenario_text}")
-
         role_assignment = {proposer_agent.agent_id: proposer_role_text}
         scenario_info_dict = {
             'scenario_text': assembled_scenario_text,
             'role_assignment': role_assignment,
             'raw_output': llm_raw_output_text 
         }
-        logging.info(f"Scenario generated and parsed successfully for agent {proposer_agent.agent_id}.")
+        logging.info(f"Async scenario generated and parsed successfully for agent {proposer_agent.agent_id}.")
         return scenario_info_dict, final_prompt_text
 
     except TimeoutError:
-         logging.error(f"Timeout generating scenario for agent {proposer_agent.agent_id} after all retries.")
-         return None, final_prompt_text
-    except goodfire_exceptions.GoodfireBaseException as e: # Catching the base Goodfire exception
-        logging.error(f"Goodfire API error generating scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
+        logging.error(f"Timeout generating async scenario for agent {proposer_agent.agent_id} after all retries.")
+        return None, final_prompt_text
+    except goodfire_exceptions.GoodfireBaseException as e:
+        logging.error(f"Goodfire API error generating async scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
         return None, final_prompt_text
     except Exception as e:
-        logging.critical(f"Unexpected critical error generating scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
+        logging.critical(f"Unexpected critical error generating async scenario for agent {proposer_agent.agent_id}: {e}", exc_info=True)
         if llm_raw_output_text is not None:
-            logging.error(f"Raw content at time of critical error (Agent {proposer_agent.agent_id}): {llm_raw_output_text[:1000]}...")
+            logging.error(f"Raw content at time of critical error (Agent {proposer_agent.agent_id}, async): {llm_raw_output_text[:1000]}...")
         return None, final_prompt_text
+
+    
 
 def generate_agent_response(agent, scenario_data: dict, transcript: list, current_role: str, config: dict) -> tuple[str | None, str | None]:
     """
