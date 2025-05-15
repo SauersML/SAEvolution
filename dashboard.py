@@ -532,8 +532,9 @@ if not run_data:
 
 # Unpack run_data for easier access
 config_snapshot = run_data["config_snapshot"]
-latest_gen_num = run_data["latest_generation_number"]
-all_gen_data = run_data["all_generation_data"]
+latest_gen_num = run_data["latest_generation_number"] # Max gen with *any* data (full state or just games)
+max_fully_checkpointed_generation = run_data["max_fully_checkpointed_generation"] # Max gen with full state (generation_XXXX.json)
+all_gen_data = run_data["all_generation_data"] # Contains full state up to max_fully_checkpointed_generation
 all_agents_by_id = run_data["all_agents_by_id"]
 lineages = run_data["lineages"]
 progenitor_map = run_data["progenitor_map"]
