@@ -7,7 +7,7 @@ export GOODFIRE_API_KEY=sk-goodfire-your-key
 
 Run the simulation:
 ```
-uv venv && source .venv/bin/activate && uv pip install pyyaml streamlit python-dotenv goodfire altair streamlit pandas && uv run driver.py
+uv venv && source .venv/bin/activate && uv pip install pyyaml streamlit matplotlib python-dotenv goodfire altair streamlit pandas && uv run driver.py
 ```
 
 Run the dashboard:
