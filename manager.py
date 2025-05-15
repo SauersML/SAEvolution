@@ -450,7 +450,7 @@ def apply_algorithmic_genome_update(
     return offspring_genome
 
 
-def evolve_population(
+async def evolve_population(
     population: list[Agent], 
     fitness_scores: list[float], 
     config: dict,
@@ -495,7 +495,8 @@ def evolve_population(
          return cloned_population
 
     try:
-        client = get_goodfire_client(config)
+        # Use the asynchronous client for feature inspection
+        client = get_goodfire_async_client(config)
     except Exception as e:
         logging.critical(f"Failed to initialize Goodfire client in evolve_population: {e}. Cannot proceed with feature inspection based evolution.", exc_info=True)
         # Fallback: Create offspring by cloning parents without genome modification
@@ -625,7 +626,8 @@ def evolve_population(
                     top_feature_activations = [] # Default to empty if inspection is skipped
                     if final_messages_for_api_inspect:
                         try:
-                            context_inspector = client.features.inspect(
+                            # It handles fetching features internally if _fetch_feature_data is True (default).
+                            context_inspector = await client.features.inspect(
                                 messages=final_messages_for_api_inspect, 
                                 model=parent_variant,
                                 features=None, 
