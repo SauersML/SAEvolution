@@ -233,23 +233,15 @@ async def generate_scenario(proposer_agent, config: dict) -> tuple[dict | None, 
     final_prompt_text = f"{prompt_text_template}\n[{diversification_seed}]"
 
     variant = goodfire.Variant(model_id)
-    raw_genome_from_proposer = proposer_agent.genome
-    genome_for_goodfire_api = {}
-    if isinstance(raw_genome_from_proposer, dict):
-        for feature_uuid, feature_data_dict in raw_genome_from_proposer.items():
-            if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
-                genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
-            elif isinstance(feature_data_dict, (int, float)):
-                logging.debug(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario_async appears to be in old format. Using it directly.")
-                genome_for_goodfire_api[feature_uuid] = float(feature_data_dict)
-            else:
-                logging.warning(f"Agent {proposer_agent.agent_id} genome for feature {feature_uuid} in generate_scenario_async has unexpected structure: {feature_data_dict}. Skipping.")
+    # Use the agent's method to get the genome in the format for the Goodfire API
+    genome_for_goodfire_api = proposer_agent.get_genome_for_goodfire_variant()
 
     if genome_for_goodfire_api:
         try:
             variant.set(genome_for_goodfire_api) # This is a synchronous operation on a local object
         except Exception as e:
-            logging.error(f"Error setting transformed variant edits for agent {proposer_agent.agent_id} in generate_scenario_async: {e}", exc_info=True)
+            # Log includes the agent_id from proposer_agent.agent_id
+            logging.error(f"Error setting variant edits for agent {proposer_agent.agent_id} in generate_scenario: {e}", exc_info=True)
 
     messages = [{"role": "user", "content": final_prompt_text}]
     llm_raw_output_text = None 
@@ -431,23 +423,15 @@ async def generate_agent_response(agent, scenario_data: dict, transcript: list, 
         return None, prompt_template_str 
 
     variant = goodfire.Variant(model_id)
-    raw_genome_from_agent = agent.genome
-    genome_for_goodfire_api = {}
-    if isinstance(raw_genome_from_agent, dict):
-        for feature_uuid, feature_data_dict in raw_genome_from_agent.items():
-            if isinstance(feature_data_dict, dict) and 'activation' in feature_data_dict:
-                genome_for_goodfire_api[feature_uuid] = feature_data_dict['activation']
-            elif isinstance(feature_data_dict, (int, float)):
-                logging.debug(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response_async (old format). Using directly.")
-                genome_for_goodfire_api[feature_uuid] = float(feature_data_dict)
-            else:
-                logging.warning(f"Agent {agent.agent_id} genome for feature {feature_uuid} in generate_agent_response_async (unexpected structure): {feature_data_dict}. Skipping.")
+    # Use the agent's method to get the genome in the format for the Goodfire API
+    genome_for_goodfire_api = agent.get_genome_for_goodfire_variant()
 
     if genome_for_goodfire_api:
         try:
             variant.set(genome_for_goodfire_api) # Synchronous local operation
         except Exception as e:
-            logging.error(f"Error setting variant edits for agent {agent.agent_id} during async response generation: {e}", exc_info=True)
+            # Log includes the agent_id from agent.agent_id
+            logging.error(f"Error setting variant edits for agent {agent.agent_id} during response generation: {e}", exc_info=True)
             
     messages = [{"role": "user", "content": prompt_text_for_llm}]
 
