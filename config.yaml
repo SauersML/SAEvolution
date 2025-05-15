@@ -1,6 +1,6 @@
 simulation:
-  num_generations: 5
-  population_size: 6
+  num_generations: 10
+  population_size: 25
   games_per_agent_target: 1 # Explicitly set: number of games each agent aims to play per generation.
 
 agent:
