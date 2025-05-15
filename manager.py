@@ -14,10 +14,11 @@ import uuid
 import math
 import copy
 import re
+import typing # Import the typing module for Union
 import goodfire # For goodfire.Variant and goodfire.Feature
 # ContextInspector will be referred to by string literal in type hints
 # as it's not directly importable from 'goodfire' or 'goodfire.features'
-# in the current SDK
+# in the current SDK.
 from interface import get_goodfire_async_client, get_goodfire_client 
 
 class Agent:
@@ -460,7 +461,7 @@ async def _inspect_parent_features_task(
     final_messages_for_api_inspect: list[dict], 
     inspect_aggregate_by_val: str, 
     config: dict # Pass config for logging/potential future use
-) -> "ContextInspector" | Exception | None:
+) -> typing.Union["ContextInspector", Exception, None]:
     """
     Helper coroutine to run feature inspection for a single parent agent.
     Returns the ContextInspector object on success, an Exception on failure, or None if no inspection is done.
