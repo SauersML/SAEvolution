@@ -16,6 +16,7 @@ import uuid # For unique game IDs
 from pathlib import Path # For path manipulation
 import json # For writing JSON
 import asyncio
+from typing import Coroutine, Any
 from manager import Agent
 from interface import generate_scenario, generate_agent_response, adjudicate_interaction
 
