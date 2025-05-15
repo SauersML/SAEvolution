@@ -14,6 +14,7 @@ import uuid
 import math
 import copy
 import re
+import asyncio
 import typing # Import the typing module for Union
 import goodfire # For goodfire.Variant and goodfire.Feature
 # ContextInspector will be referred to by string literal in type hints
