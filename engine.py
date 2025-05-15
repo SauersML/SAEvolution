@@ -558,26 +558,21 @@ def run_game_round(population: list[Agent], config: dict, run_id: str, generatio
 
                 # Check if both agents still need to play more games to reach their target
                 if games_played_this_round_count.get(agent_A_obj.agent_id, 0) < games_per_agent_target and \
-                   games_played_this_round_count.get(agent_B_obj.agent_id, 0) < games_per_agent_target:
-                    
-                    actual_games_played_this_round_idx += 1
-                    game_detail_dict = _play_single_game(
-                        agent_A_obj, agent_B_obj, config,
-                        run_id, generation_number, actual_games_played_this_round_idx
-                    )
-                    
-                    if game_detail_dict and game_detail_dict.get("game_id"): # Check for valid game detail dict
-                        all_games_details_this_round.append(game_detail_dict)
-                    else:
-                        logging.error(f"Game round iteration {iter_num+1}: _play_single_game returned invalid/empty details for pair {agent_A_obj.agent_id} vs {agent_B_obj.agent_id}. Skipping game detail append.")
-                    
-                    # Update game counts for the agents involved
-                    games_played_this_round_count[agent_A_obj.agent_id] = games_played_this_round_count.get(agent_A_obj.agent_id, 0) + 1
-                    games_played_this_round_count[agent_B_obj.agent_id] = games_played_this_round_count.get(agent_B_obj.agent_id, 0) + 1
-                    
-                    # Mark these agents as paired in this shuffle pass
-                    was_paired_in_this_shuffle_pass[idx1] = True
-                    was_paired_in_this_shuffle_pass[idx2] = True
+                       games_played_this_round_count.get(agent_B_obj.agent_id, 0) < games_per_agent_target:
+
+                        actual_games_played_this_round_idx += 1
+                        # Create a coroutine for the game; it will be awaited later with asyncio.gather.
+                        # _play_single_game is now an async function.
+                        game_task = _play_single_game(
+                            agent_A_obj, agent_B_obj, config,
+                            run_id, generation_number, actual_games_played_this_round_idx
+                        )
+                        tasks_for_this_pass.append(game_task) # Add the coroutine (task) to the list for this pass.
+
+                        # Mark agents as scheduled for a game in this pass to prevent re-pairing them in the same pass.
+                        # Actual game counts (games_played_this_round_count) will be updated after asyncio.gather completes for the pass.
+                        was_paired_in_this_shuffle_pass[idx1] = True
+                        was_paired_in_this_shuffle_pass[idx2] = True
             
             if iter_num == max_iters_pairing - 1: # If max iterations reached
                  logging.warning(
