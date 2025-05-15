@@ -309,13 +309,13 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
             logging.debug(f"Game {game_id}: Labeled transcript for adjudicator:\n{labeled_transcript_str_for_adj}")
 
             logging.debug(f"Game {game_id}: Requesting adjudication (two calls: scratchpad, then outcome/IDs).")
-            # Call adjudicate_interaction which now returns 8 values
+            # Call adjudicate_interaction which returns 8 values
             (final_parsed_outcome, win_msg_id, lose_msg_id, scratchpad_content,
              prompt_for_scratchpad, raw_output_scratchpad,
-             prompt_for_outcome_ids, raw_output_outcome_ids) = adjudicate_interaction(
+             prompt_for_outcome_ids, raw_output_outcome_ids) = await adjudicate_interaction( # Added await
                 scenario_info, labeled_transcript_str_for_adj, config
             )
-            
+                
             # Store all new adjudication details from the two-stage process
             game_details_dict["adjudication_result"] = final_parsed_outcome 
             game_details_dict["adjudication_win_message_id"] = win_msg_id
