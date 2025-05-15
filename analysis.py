@@ -645,18 +645,19 @@ def perform_trajectory_statistical_test(
 def plot_feature_activation_trajectories(
     feature_trajectories_data: dict,
     output_filename: str = DEFAULT_PLOT_FILENAME,
-    top_n_label: int = PLOT_TOP_N_LABEL,
-    bottom_n_label: int = PLOT_BOTTOM_N_LABEL,
+    top_n_label: int = 3, # Changed to 3 as per new requirement
+    # bottom_n_label is no longer used due to "ONLY TOP 3 LABELS"
     smoothing_window: int = SMOOTHING_WINDOW_SIZE,
     smoothing_order: int = SMOOTHING_POLYORDER
 ):
     """
     Makes ONE beautiful plot of the feature values over time.
-    Smooths it. Anything +/- SD away from the mean of THAT FEATURE'S TRAJECTORY,
-    make it colorful. Everything within an SD should be gray.
-    Label the top N and bottom N features by their final activation value.
+    Smooths trajectories. Colors the entire curve for a feature if its
+    final smoothed value is +/- 1 SD away from that feature's own trajectory mean;
+    otherwise, the curve is gray.
+    Labels the top N features by their final positive activation value.
     """
-    logger.info(f"Generating feature activation trajectory plot: {output_filename}")
+    logger.info(f"Generating feature activation trajectory plot: {output_filename} (Top {top_n_label} labels)")
     if not feature_trajectories_data:
         logger.warning("No feature trajectory data to plot.")
         return
@@ -664,110 +665,198 @@ def plot_feature_activation_trajectories(
     num_features = len(feature_trajectories_data)
     max_gen = 0
     if feature_trajectories_data:
-        # Get max_gen from the length of the first trajectory list
         first_traj_key = list(feature_trajectories_data.keys())[0]
-        max_gen = len(feature_trajectories_data[first_traj_key]['avg_trajectory'])
+        if feature_trajectories_data[first_traj_key]['avg_trajectory']:
+            max_gen = len(feature_trajectories_data[first_traj_key]['avg_trajectory'])
+    
     if max_gen == 0:
-        logger.warning("Max generation is 0, cannot plot trajectories.")
+        logger.warning("Max generation is 0, or trajectories are empty. Cannot plot.")
         return
 
-    plt.style.use('seaborn-v0_8-whitegrid') # Using a seaborn style
-    fig, ax = plt.subplots(figsize=(18, 10))
-    
-    # Determine unique labels for colormap, assign consistent colors
-    sorted_feature_items = sorted(feature_trajectories_data.items(), key=lambda item: item[1]['label'])
-    
-    # Create a colormap for distinct features if they go outside SD
-    # Using a qualitative colormap like 'tab20' or 'Paired'
-    colors = plt.cm.get_cmap('tab20', num_features)
-    feature_color_map = {item[0]: colors(i) for i, item in enumerate(sorted_feature_items)}
+    plt.style.use('seaborn-v0_8-bright') # A more vibrant style
+    fig, ax = plt.subplots(figsize=(20, 12)) # Increased figure size for clarity
 
-    final_values_for_labeling = {} # feature_uuid -> (final_value, label)
+    try:
+        # Dark2 is good for lines on a white background.
+        palette = plt.cm.get_cmap('Dark2', max(8, top_n_label)) # at least 8 colors if top_n_label is small
+    except ValueError: # If max() is 0 or negative
+        palette = plt.cm.get_cmap('Dark2', 8)
+        
+    distinct_colors = [palette(i) for i in range(palette.N)]
 
-    for i, (feature_uuid, data) in enumerate(sorted_feature_items):
+
+    all_smoothed_y_values = []
+    feature_plot_details = [] # Store details for plotting: (uuid, label, smoothed_traj, line_color, final_val)
+
+    for feature_uuid, data in feature_trajectories_data.items():
         raw_traj = data['avg_trajectory']
         label = data.get('label', f"UUID_{feature_uuid[:8]}")
 
-        # Convert to numpy array with NaNs for smoothing
         traj_np = np.array([val if val is not None else np.nan for val in raw_traj], dtype=float)
-        
         smoothed_traj = smooth_trajectory(list(traj_np), smoothing_window, smoothing_order)
         
-        # Store final non-NaN value for labeling
-        final_val = np.nan
-        for val in reversed(smoothed_traj):
-            if not np.isnan(val):
-                final_val = val
-                break
-        if not np.isnan(final_val):
-            final_values_for_labeling[feature_uuid] = (final_val, label)
+        all_smoothed_y_values.extend(smoothed_traj[~np.isnan(smoothed_traj)])
+
+        final_smoothed_val = np.nan
+        if smoothed_traj.size > 0:
+            # Get the last non-NaN value
+            valid_indices = np.where(~np.isnan(smoothed_traj))[0]
+            if len(valid_indices) > 0:
+                final_smoothed_val = smoothed_traj[valid_indices[-1]]
+
 
         mean_of_this_feature_traj = np.nanmean(smoothed_traj)
         std_of_this_feature_traj = np.nanstd(smoothed_traj)
-
-        x_axis = np.arange(max_gen)
         
-        # Create segments for LineCollection
-        points = np.array([x_axis, smoothed_traj]).T.reshape(-1, 1, 2)
-        segments = np.concatenate([points[:-1], points[1:]], axis=1)
-        
-        line_colors = []
-        for k in range(len(smoothed_traj) - 1):
-            # Color based on the starting point of the segment
-            val_k = smoothed_traj[k]
-            if np.isnan(val_k) or np.isnan(mean_of_this_feature_traj) or np.isnan(std_of_this_feature_traj) or std_of_this_feature_traj < 1e-6:
-                line_colors.append('gray') # Default to gray if stats are undefined
-            elif val_k > mean_of_this_feature_traj + std_of_this_feature_traj or \
-                 val_k < mean_of_this_feature_traj - std_of_this_feature_traj:
-                line_colors.append(feature_color_map.get(feature_uuid, 'blue')) # Colorful
-            else:
-                line_colors.append('lightgray') # Within SD, gray
+        line_color = 'lightgray' # Default color
+        is_highlighted = False
 
-        lc = LineCollection(segments, colors=line_colors, linewidths=1.2, alpha=0.8, capstyle='round')
-        ax.add_collection(lc)
+        if not np.isnan(final_smoothed_val) and not np.isnan(mean_of_this_feature_traj) and not np.isnan(std_of_this_feature_traj) and std_of_this_feature_traj > 1e-7:
+            if final_smoothed_val > mean_of_this_feature_traj + std_of_this_feature_traj or \
+               final_smoothed_val < mean_of_this_feature_traj - std_of_this_feature_traj:
+                # Assign a unique color later if it's one of the top ones to be labeled
+                # For now, mark as highlighted. Color will be assigned during labeling.
+                is_highlighted = True 
+                # line_color will be set if this feature is chosen for labeling
 
-    # Labeling Top N and Bottom N features
-    if final_values_for_labeling:
-        sorted_by_final_val = sorted(final_values_for_labeling.items(), key=lambda item: item[1][0])
-        
-        top_features = [item[0] for item in sorted_by_final_val[-top_n_label:]]
-        bottom_features = [item[0] for item in sorted_by_final_val[:bottom_n_label]]
-        features_to_label = set(top_features + bottom_features)
+        feature_plot_details.append({
+            'uuid': feature_uuid,
+            'label': label,
+            'smoothed_traj': smoothed_traj,
+            'default_color': line_color, # This will be overridden for highlighted top features
+            'is_highlighted_candidate': is_highlighted, # Candidate for distinct color
+            'final_val': final_smoothed_val,
+            'mean_traj': mean_of_this_feature_traj, # For debugging or further use
+            'std_traj': std_of_this_feature_traj   # For debugging or further use
+        })
 
-        for feature_uuid_to_label in features_to_label:
-            if feature_uuid_to_label in final_values_for_labeling:
-                final_val, label_text = final_values_for_labeling[feature_uuid_to_label]
-                # Find the trajectory again for plotting position
-                original_data = feature_trajectories_data[feature_uuid_to_label]
-                traj_np_label = np.array([val if val is not None else np.nan for val in original_data['avg_trajectory']], dtype=float)
-                smoothed_traj_label = smooth_trajectory(list(traj_np_label), smoothing_window, smoothing_order)
-                
-                # Find last non-NaN x,y for annotation
-                last_x, last_y = -1, np.nan
-                for x_idx, y_val in reversed(list(enumerate(smoothed_traj_label))):
-                    if not np.isnan(y_val):
-                        last_x, last_y = x_idx, y_val
-                        break
-                
-                if last_x != -1:
-                    ax.text(last_x + 0.5, last_y, label_text, fontsize=9,
-                            color=feature_color_map.get(feature_uuid_to_label, 'black'),
-                            verticalalignment='center')
+    # Determine overall Y-axis range
+    if all_smoothed_y_values:
+        min_y = min(all_smoothed_y_values)
+        max_y = max(all_smoothed_y_values)
+        padding = (max_y - min_y) * 0.05 if (max_y - min_y) > 1e-6 else 0.1
+        ax.set_ylim(min_y - padding, max_y + padding)
+    else: # Handle case with no valid y values
+        ax.set_ylim(-1, 1) # Default if no data
 
-    ax.set_xlim(0, max_gen -1 if max_gen > 0 else 1)
-    ax.set_xlabel("Generation", fontsize=14)
-    ax.set_ylabel("Average Activation (Smoothed)", fontsize=14)
-    ax.set_title("Feature Activation Trajectories Over Generations", fontsize=16, fontweight='bold')
-    ax.grid(True, which='major', linestyle='--', linewidth=0.5)
-    plt.tight_layout()
+    x_axis = np.arange(max_gen)
+
+    # Identify top N features to label and color distinctly
+    # We want the top N *positive* final values.
+    # Filter for positive final values first, then sort, then take top N.
+    features_with_positive_final_val = sorted(
+        [d for d in feature_plot_details if not np.isnan(d['final_val']) and d['final_val'] > 0],
+        key=lambda x: x['final_val'],
+        reverse=True
+    )
+    top_n_features_to_label_data = features_with_positive_final_val[:top_n_label]
     
+    labeled_feature_uuids = {d['uuid'] for d in top_n_features_to_label_data}
+    
+    # Assign distinct colors to these top N features
+    color_idx = 0
+    for detail in feature_plot_details:
+        if detail['uuid'] in labeled_feature_uuids:
+            detail['line_color'] = distinct_colors[color_idx % len(distinct_colors)]
+            color_idx += 1
+        elif detail['is_highlighted_candidate']: # Other highlighted but not top N labeled
+             detail['line_color'] = 'darkgray' # A slightly more prominent gray
+        else:
+            detail['line_color'] = detail['default_color']
+
+
+    # Plotting pass 1: Gray lines (not labeled, not highlighted beyond darkgray)
+    for detail in feature_plot_details:
+        if detail['uuid'] not in labeled_feature_uuids:
+            ax.plot(x_axis, detail['smoothed_traj'], color=detail['line_color'],
+                    linewidth=1.0 if detail['line_color'] == 'lightgray' else 1.2,
+                    alpha=0.6 if detail['line_color'] == 'lightgray' else 0.7,
+                    zorder=1 if detail['line_color'] == 'lightgray' else 2)
+
+    # Plotting pass 2: Top N labeled lines (colored and thicker)
+    for detail in feature_plot_details:
+        if detail['uuid'] in labeled_feature_uuids:
+            ax.plot(x_axis, detail['smoothed_traj'], color=detail['line_color'],
+                    linewidth=2.0, alpha=0.9, zorder=3, label=f"{detail['label']} (Final: {detail['final_val']:.2f})")
+
+
+    # --- Advanced Labeling for Top N to avoid overlap ---
+    # This is a simplified approach. For perfect results, a library like adjustText is better.
+    if top_n_features_to_label_data:
+        # Sort by final y-value for staggered placement
+        sorted_labels_for_placement = sorted(top_n_features_to_label_data, key=lambda x: x['final_val'], reverse=True)
+        
+        y_coords_used = []
+        label_height_approx = (ax.get_ylim()[1] - ax.get_ylim()[0]) * 0.025 # Approx height of a label
+
+        for idx, detail in enumerate(sorted_labels_for_placement):
+            label_text = detail['label']
+            smoothed_traj_label = detail['smoothed_traj']
+            line_color_for_label = detail['line_color']
+
+            # Find last non-NaN x,y for annotation
+            last_x_idx, last_y_val = -1, np.nan
+            valid_indices = np.where(~np.isnan(smoothed_traj_label))[0]
+            if len(valid_indices) > 0:
+                last_x_idx = valid_indices[-1]
+                last_y_val = smoothed_traj_label[last_x_idx]
+
+            if last_x_idx != -1:
+                target_y = last_y_val
+                
+                # Attempt to avoid overlap by slightly adjusting y
+                # This is a very basic heuristic
+                is_too_close = True
+                attempts = 0
+                max_attempts = 10
+                original_target_y = target_y
+                
+                while is_too_close and attempts < max_attempts:
+                    is_too_close = False
+                    for used_y in y_coords_used:
+                        if abs(target_y - used_y) < label_height_approx:
+                            is_too_close = True
+                            break
+                    if is_too_close:
+                        # Try moving up or down from original position, alternating
+                        direction = 1 if (attempts // 2) % 2 == 0 else -1
+                        shift_factor = (attempts // 2) + 1
+                        target_y = original_target_y + direction * shift_factor * (label_height_approx * 0.6) # Smaller shifts
+                    attempts += 1
+
+                y_coords_used.append(target_y)
+
+                ax.text(max_gen -1 + 0.5, # Place text to the right of the plot
+                        target_y, 
+                        f"{label_text}", 
+                        fontsize=10,
+                        fontweight='bold',
+                        color=line_color_for_label, # Use the line's color
+                        verticalalignment='center',
+                        bbox=dict(boxstyle="round,pad=0.2", fc="white", ec="none", alpha=0.7))
+
+    ax.set_xlim(-0.5, max_gen - 0.5 if max_gen > 0 else 0.5) # Give a little space
+    ax.set_xlabel("Generation", fontsize=16, fontweight='bold', labelpad=10)
+    ax.set_ylabel("Average Activation (Smoothed)", fontsize=16, fontweight='bold', labelpad=10)
+    ax.set_title("Feature Activation Trajectories Over Generations", fontsize=20, fontweight='bold', pad=20)
+    
+    # Customize grid and spines
+    ax.grid(True, which='major', linestyle=':', linewidth=0.7, color='gray', alpha=0.6)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_linewidth(1.5)
+    ax.spines['bottom'].set_linewidth(1.5)
+    
+    ax.tick_params(axis='both', which='major', labelsize=12, pad=5)
+
+    plt.tight_layout(rect=[0, 0, 0.9, 1]) # Adjust rect to make space for labels if they are outside
+
     try:
-        plt.savefig(output_filename, dpi=300)
+        plt.savefig(output_filename, dpi=300, bbox_inches='tight')
         logger.info(f"Plot saved to {output_filename}")
     except Exception as e:
         logger.error(f"Failed to save plot: {e}")
     plt.close(fig)
-
 
 # --- Main Execution Block ---
 if __name__ == "__main__":
