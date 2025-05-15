@@ -15,6 +15,7 @@ import datetime
 import uuid # For unique game IDs
 from pathlib import Path # For path manipulation
 import json # For writing JSON
+import asyncio
 from manager import Agent
 from interface import generate_scenario, generate_agent_response, adjudicate_interaction
 
@@ -253,12 +254,12 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
                 current_turn_agent_game_role = game_details_dict["player_A_game_role"] if current_turn_agent == agent1 else game_details_dict["player_B_game_role"]
                 
                 logging.debug(f"Game {game_id} Turn {turn_idx + 1}: Agent {current_turn_agent.agent_id} ({current_turn_agent_game_role}) responding.")
-                
-                response_text, agent_action_llm_prompt = generate_agent_response(
+    
+                response_text, agent_action_llm_prompt = await generate_agent_response( # Added await
                     current_turn_agent, scenario_info, current_transcript,
                     current_turn_agent_game_role, config
                 )
-
+    
                 turn_entry = {
                     "role": current_turn_agent_game_role,
                     "agent_id": current_turn_agent.agent_id,
