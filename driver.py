@@ -342,50 +342,48 @@ async def run_simulation(args):
         logging.info(f"--- Starting Generation {gen_num}/{num_generations} for run {simulation_run_id} ---")
         generation_game_details = [] 
 
-    try:
-        # Call the asynchronous run_game_round function
-        population_after_round, generation_game_details = await run_game_round(
-            current_population, config, simulation_run_id, gen_num
-        )
+        try:
+            population_after_round, generation_game_details = await run_game_round(
+                current_population, config, simulation_run_id, gen_num
+            )
 
-        if not isinstance(population_after_round, list) or len(population_after_round) != len(current_population):
-                 logging.error(f"Population state invalid after game round in Generation {gen_num}. Expected {len(current_population)} agents, got {len(population_after_round)}. Aborting.")
-                 break
+            if not isinstance(population_after_round, list) or len(population_after_round) != len(current_population):
+                logging.error(f"Population state invalid after game round in Generation {gen_num}. Expected {len(current_population)} agents, got {len(population_after_round)}. Aborting.")
+                break
+            
             logging.info(f"Completed game round for Generation {gen_num}. {len(generation_game_details)} games played.")
-
+            
             fitness_scores_list = calculate_fitness(population_after_round)
             fitness_scores_map = {}
             if len(population_after_round) == len(fitness_scores_list):
                 for agent, score in zip(population_after_round, fitness_scores_list):
-                    if hasattr(agent, 'agent_id'): # Ensure agent has an ID for the map
-                         agent.current_fitness_score = score # Store on agent instance for easier access
-                         fitness_scores_map[agent.agent_id] = score
+                    if hasattr(agent, 'agent_id'): 
+                        agent.current_fitness_score = score 
+                        fitness_scores_map[agent.agent_id] = score
                     else:
                         logging.warning("Agent found without agent_id during fitness score mapping.")
             else:
                 logging.error(f"Mismatch between population size ({len(population_after_round)}) and fitness scores ({len(fitness_scores_list)}) in Gen {gen_num}. Cannot map fitness scores.")
             
             if not isinstance(fitness_scores_list, list) or len(fitness_scores_list) != len(population_after_round):
-                 logging.error(f"Fitness scores invalid after calculation in Generation {gen_num}. Expected {len(population_after_round)} scores, got {len(fitness_scores_list)}. Aborting.")
-                 break
+                logging.error(f"Fitness scores invalid after calculation in Generation {gen_num}. Expected {len(population_after_round)} scores, got {len(fitness_scores_list)}. Aborting.")
+                break
             logging.info(f"Calculated fitness for Generation {gen_num}.")
             
-            # Pass generation_game_details to evolve_population
-            next_population = evolve_population(
+            next_population = await evolve_population(
                 population_after_round, 
                 fitness_scores_list, 
                 config,
-                generation_game_details # Pass the list of game detail dicts
+                generation_game_details 
             )
-            if not isinstance(next_population, list) or len(next_population) != len(population_after_round): # Should maintain pop size
-                 logging.error(f"Population state invalid after evolution in Generation {gen_num}. Expected {len(population_after_round)} agents, got {len(next_population)}. Aborting.")
-                 break
+            if not isinstance(next_population, list) or len(next_population) != len(population_after_round): 
+                logging.error(f"Population state invalid after evolution in Generation {gen_num}. Expected {len(population_after_round)} agents, got {len(next_population)}. Aborting.")
+                break
             logging.info(f"Population evolved for Generation {gen_num}.")
 
             current_population = next_population
-            last_successfully_saved_generation = gen_num # Mark this generation as completed
+            last_successfully_saved_generation = gen_num 
 
-            # --- State Saving / Checkpointing ---
             if save_state_enabled and (gen_num % save_state_interval == 0 or gen_num == num_generations):
                 generation_summary_metrics = {
                     "avg_fitness": (sum(fitness_scores_list) / len(fitness_scores_list)) if fitness_scores_list else 0,
@@ -403,23 +401,18 @@ async def run_simulation(args):
                     game_details_for_generation=generation_game_details,
                     rng_state=list(random.getstate()),
                     generation_summary_metrics=generation_summary_metrics,
-                    state_base_dir=state_base_dir # Use the determined state_base_dir
+                    state_base_dir=state_base_dir 
                 )
 
         except KeyboardInterrupt:
-             logging.warning(f"Simulation run {simulation_run_id} interrupted by user during Generation {gen_num}.")
-             logging.info(f"Last successfully completed and potentially saved generation was: {last_successfully_saved_generation if last_successfully_saved_generation >= (start_generation if resuming else 1) else 'None this session'}")
-             break
+            logging.warning(f"Simulation run {simulation_run_id} interrupted by user during Generation {gen_num}.")
+            logging.info(f"Last successfully completed and potentially saved generation was: {last_successfully_saved_generation if last_successfully_saved_generation >= (start_generation if resuming else 1) else 'None this session'}")
+            break
         except Exception as e:
             logging.critical(f"Critical error during Generation {gen_num} of run {simulation_run_id}: {e}", exc_info=True)
             break
         finally:
-            # This block will execute whether the try block completed normally or due to an exception/break.
-            # We can log the effective end generation here.
-            # 'gen_num' will hold the value of the generation that was being processed or just finished.
-            # If the loop didn't even start (e.g. error in init), gen_num might not be defined.
             current_gen_for_log = locals().get('gen_num', start_generation if resuming else 0)
-
 
     # Final log message outside the loop
     final_gen_message_val = current_gen_for_log if 'current_gen_for_log' in locals() else (start_generation -1 if resuming else 0)
