@@ -28,53 +28,53 @@ _async_client_instance = None # For the asynchronous client
 _last_async_client_config_hash = None # For the asynchronous client's config hash
 
 def _get_config_hash(config: dict) -> str:
-    """Helper function to create a hash of relevant client configuration parts."""
-    relevant_config = {
-        'api_key_env_var': config.get('goodfire', {}).get('api_key_env_var'),
-        'base_url': config.get('goodfire', {}).get('base_url')
-    }
-    return hashlib.sha256(json.dumps(relevant_config, sort_keys=True).encode()).hexdigest()
+    """Helper function to create a hash of relevant client configuration parts."""
+    relevant_config = {
+        'api_key_env_var': config.get('goodfire', {}).get('api_key_env_var'),
+        'base_url': config.get('goodfire', {}).get('base_url')
+    }
+    return hashlib.sha256(json.dumps(relevant_config, sort_keys=True).encode()).hexdigest()
 
 def get_goodfire_async_client(config: dict) -> goodfire.AsyncClient:
-    """
-    Initializes and returns an asynchronous Goodfire client instance.
-    Manages a global async client instance, re-initializing if config changes.
-    """
-    global _async_client_instance
-    global _last_async_client_config_hash
+    """
+    Initializes and returns an asynchronous Goodfire client instance.
+    Manages a global async client instance, re-initializing if config changes.
+    """
+    global _async_client_instance
+    global _last_async_client_config_hash
 
-    if not isinstance(config, dict):
-        logging.critical("get_goodfire_async_client: Invalid config type provided (must be a dictionary).")
-        raise TypeError("Configuration must be a dictionary for async client.")
+    if not isinstance(config, dict):
+        logging.critical("get_goodfire_async_client: Invalid config type provided (must be a dictionary).")
+        raise TypeError("Configuration must be a dictionary for async client.")
 
-    current_config_hash = _get_config_hash(config)
+    current_config_hash = _get_config_hash(config)
 
-    if _async_client_instance is not None and current_config_hash == _last_async_client_config_hash:
-        return _async_client_instance
+    if _async_client_instance is not None and current_config_hash == _last_async_client_config_hash:
+        return _async_client_instance
 
-    goodfire_config_dict = config.get('goodfire', {})
-    api_key_env_var = goodfire_config_dict.get('api_key_env_var', 'GOODFIRE_API_KEY')
-    api_key = os.environ.get(api_key_env_var)
-    base_url = goodfire_config_dict.get('base_url') # Can be None
+    goodfire_config_dict = config.get('goodfire', {})
+    api_key_env_var = goodfire_config_dict.get('api_key_env_var', 'GOODFIRE_API_KEY')
+    api_key = os.environ.get(api_key_env_var)
+    base_url = goodfire_config_dict.get('base_url') # Can be None
 
-    if not api_key:
-        logging.critical(f"Goodfire API key not found in environment variable: {api_key_env_var} for async client.")
-        raise ValueError(f"Environment variable {api_key_env_var} must be set for Goodfire API (async client).")
+    if not api_key:
+        logging.critical(f"Goodfire API key not found in environment variable: {api_key_env_var} for async client.")
+        raise ValueError(f"Environment variable {api_key_env_var} must be set for Goodfire API (async client).")
 
-    try:
-        client_args = {"api_key": api_key}
-        if base_url: # Only add base_url if it's provided and not None/empty
-            client_args["base_url"] = base_url
+    try:
+        client_args = {"api_key": api_key}
+        if base_url: # Only add base_url if it's provided and not None/empty
+            client_args["base_url"] = base_url
 
-        _async_client_instance = goodfire.AsyncClient(**client_args)
-        logging.info(f"Goodfire AsyncClient initialized (Base URL: {base_url if base_url else 'Default Goodfire API URL'}).")
-        _last_async_client_config_hash = current_config_hash
-        return _async_client_instance
-    except Exception as e:
-        logging.critical(f"Failed to initialize Goodfire AsyncClient: {e}", exc_info=True)
-        _async_client_instance = None # Reset on failure
-        _last_async_client_config_hash = None
-        raise RuntimeError("Could not initialize Goodfire AsyncClient.") from e
+        _async_client_instance = goodfire.AsyncClient(**client_args)
+        logging.info(f"Goodfire AsyncClient initialized (Base URL: {base_url if base_url else 'Default Goodfire API URL'}).")
+        _last_async_client_config_hash = current_config_hash
+        return _async_client_instance
+    except Exception as e:
+        logging.critical(f"Failed to initialize Goodfire AsyncClient: {e}", exc_info=True)
+        _async_client_instance = None # Reset on failure
+        _last_async_client_config_hash = None
+        raise RuntimeError("Could not initialize Goodfire AsyncClient.") from e
 
 def get_goodfire_client(config: dict) -> goodfire.Client:
     """
