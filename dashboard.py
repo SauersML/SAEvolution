@@ -1281,41 +1281,49 @@ with tab_container_map["👤 Agent Detail"]:
     st.header("👤 Agent Detail Viewer")
 
     # Generation selection for agent context.
-    # If only one generation exists, it must be 1. Otherwise, allow selection via slider.
-    if latest_gen_num == 1:
+    # Agent details are based on fully checkpointed generations, so use max_fully_checkpointed_generation.
+    selected_gen_for_agent = None # Initialize
+
+    if max_fully_checkpointed_generation == 0:
+        st.info("No fully checkpointed generation data available for agent context.")
+    elif max_fully_checkpointed_generation == 1:
         selected_gen_for_agent = 1
-        st.markdown("Agent context from Generation 1 (only generation available).")
-        # Check if navigation state is consistent.
-        if st.session_state.nav_to_generation is not None and st.session_state.nav_to_generation != 1:
+        st.markdown("Agent context from Generation 1 (only fully checkpointed generation available).")
+        # Check if navigation state (which might target a higher gen with only game data) needs adjustment.
+        nav_gen_val_agent_tab = st.session_state.get('nav_to_generation')
+        if nav_gen_val_agent_tab is not None and nav_gen_val_agent_tab != 1:
             st.warning(
-                f"Navigation previously targeted generation {st.session_state.nav_to_generation} for agent context, "
-                f"but only generation 1 is currently available. Using generation 1."
+                f"Navigation previously targeted generation {nav_gen_val_agent_tab} for agent context, "
+                f"but only generation 1 (fully checkpointed) is currently available for agent details. Using generation 1."
             )
-    else: # latest_gen_num > 1
+    else: # max_fully_checkpointed_generation > 1
         # Determine the default value for the slider.
-        # Default to the latest generation, unless a specific generation is navigated to.
-        default_agent_gen_value = latest_gen_num
-        if st.session_state.nav_to_generation is not None and \
-           1 <= st.session_state.nav_to_generation <= latest_gen_num:
-            default_agent_gen_value = st.session_state.nav_to_generation
+        # Default to the latest fully checkpointed generation, unless a specific valid generation is navigated to.
+        default_agent_gen_value = max_fully_checkpointed_generation
+        nav_gen_val_agent_tab = st.session_state.get('nav_to_generation')
+        if nav_gen_val_agent_tab is not None and \
+           1 <= nav_gen_val_agent_tab <= max_fully_checkpointed_generation: # Ensure nav target is within fully_checkpointed range
+            default_agent_gen_value = nav_gen_val_agent_tab
         
         selected_gen_for_agent = st.slider(
             "Select Generation for Agent Context", 
             min_value=1, 
-            max_value=latest_gen_num, 
+            max_value=max_fully_checkpointed_generation, # Use max_fully_checkpointed_generation
             value=default_agent_gen_value, 
             key="agent_detail_gen_slider"
         )
     
     # Update session state with the selected generation, useful for navigation persistence.
-    st.session_state.nav_to_generation = selected_gen_for_agent
+    if selected_gen_for_agent is not None:
+        st.session_state.nav_to_generation = selected_gen_for_agent
 
-    if selected_gen_for_agent and selected_gen_for_agent in all_gen_data:
+    # Proceed if a valid generation is selected/determined and it has data in all_gen_data
+    if selected_gen_for_agent is not None and selected_gen_for_agent in all_gen_data:
         agents_in_selected_gen = all_gen_data[selected_gen_for_agent].get("population_state", [])
         agent_options = {a['agent_id']: get_agent_display_name(a['agent_id']) for a in agents_in_selected_gen}
 
         if not agent_options:
-            st.info(f"No agents found in Generation {selected_gen_for_agent}.")
+            st.info(f"No agents found in fully checkpointed Generation {selected_gen_for_agent}.")
         else:
             default_agent_id = list(agent_options.keys())[0]
             if st.session_state.nav_to_agent_id and st.session_state.nav_to_agent_id in agent_options:
