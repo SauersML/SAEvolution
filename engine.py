@@ -462,11 +462,10 @@ def _play_single_game(agent1: Agent, agent2: Agent, config: dict, run_id: str, g
     return game_details_dict
 
 
-
-def run_game_round(population: list[Agent], config: dict, run_id: str, generation_number: int) -> tuple[list[Agent], list[dict]]:
+async def run_game_round(population: list[Agent], config: dict, run_id: str, generation_number: int) -> tuple[list[Agent], list[dict]]:
     """
-    Manages a round of games for the entire population.
-    Agents are paired, play games, and their states (wealth, history) are updated.
+    Manages a round of games for the entire population asynchronously.
+    Agents are paired, play games concurrently within pairing passes, and their states (wealth, history) are updated.
     Returns the updated population and a list of detailed game dictionaries.
     """
     if not isinstance(population, list):
@@ -474,24 +473,19 @@ def run_game_round(population: list[Agent], config: dict, run_id: str, generatio
         return [], [] # Return empty population and empty game details
     if not all(isinstance(agent, Agent) for agent in population):
         logging.error("run_game_round: All elements in population list must be Agent instances.")
-        # Decide: return original population or empty? For safety, let's assume if one is bad, all might be.
-        return population, [] # Or return [], [] if strict
+        return population, [] 
     if not population:
         logging.warning("run_game_round: Called with an empty population. No games will be played.")
         return [], []
     if not isinstance(config, dict):
         logging.error("run_game_round: Config argument must be a dictionary.")
-        return population, [] # Return original population, empty game details
+        return population, [] 
 
     sim_settings = config.get('simulation', {})
-
-    # 0 = error
-    games_per_agent_target = int(sim_settings.get('games_per_agent_target', config.get('game',{}).get('interaction_turns_per_agent',0))) 
-    
-    pairing_strategy = config.get('round', {}).get('pairing_strategy', 'random_shuffle') # Default to random_shuffle
+    games_per_agent_target = int(sim_settings.get('games_per_agent_target', config.get('game',{}).get('interaction_turns_per_agent',0)))   
+    pairing_strategy = config.get('round', {}).get('pairing_strategy', 'random_shuffle') 
     num_agents = len(population)
     initial_wealth_val = float(config.get('agent', {}).get('initial_wealth', 30.0))
-
     all_games_details_this_round: list[dict] = []
 
     # Reset agent states for the new round (wealth to initial, clear round_history)
@@ -499,9 +493,8 @@ def run_game_round(population: list[Agent], config: dict, run_id: str, generatio
         try:
             current_agent.reset_round_state(initial_wealth_val)
         except AttributeError:
-             # This is critical, means Agent class is broken or object is not an Agent
-             logging.critical(f"Agent {getattr(current_agent, 'agent_id', f'Unknown_at_index_{ag_idx}')} missing reset_round_state method. Cannot proceed with game round.")
-             raise # Re-raise, as this indicates a fundamental issue
+            logging.critical(f"Agent {getattr(current_agent, 'agent_id', f'Unknown_at_index_{ag_idx}')} missing reset_round_state method. Cannot proceed with game round.")
+            raise 
 
     if num_agents < 2:
         logging.warning(f"Not enough agents ({num_agents}) for pairing. At least 2 are required. Skipping game round.")
@@ -509,32 +502,22 @@ def run_game_round(population: list[Agent], config: dict, run_id: str, generatio
 
     if pairing_strategy == 'random_shuffle':
         games_played_this_round_count = {agent.agent_id: 0 for agent in population}
-        
-        # Aim for each agent to play 'games_per_agent_target' games.
-        # Total number of game participations needed is num_agents * games_per_agent_target.
-        # Each game involves 2 participations, so total games = (participations_needed) / 2.
         total_participations_needed = num_agents * games_per_agent_target
         
-        # total participations is even for clean pairing.
         if total_participations_needed % 2 != 0:
-            # If odd, one agent might play one less game than target if we strictly pair.
-            # Or, one agent plays one more. Let's aim for at least the target.
             logging.warning(
                 f"Target total participations ({total_participations_needed}) is odd. "
                 f"Game counts per agent might vary slightly around the target of {games_per_agent_target}."
             )
         
         num_total_games_to_schedule = total_participations_needed // 2
-        
-        # Heuristic for max iterations to prevent infinite loops if pairing is difficult
-        # Could be (num_total_games_to_schedule * some_factor) or based on num_agents
         max_iters_pairing = num_total_games_to_schedule * 5 + num_agents # A generous upper bound
         if num_agents <= 3: # For very small populations, need more relative iterations
-             max_iters_pairing = games_per_agent_target * num_agents * 2 
-
+            max_iters_pairing = games_per_agent_target * num_agents * 2 
 
         actual_games_played_this_round_idx = 0 # For unique game indexing in _play_single_game
         for iter_num in range(max_iters_pairing):
+            tasks_for_this_pass: list[asyncio.Task] = [] # Initialize list to hold game tasks for the current pass
             # Check if all agents have met their target game count
             if all(count >= games_per_agent_target for count in games_played_this_round_count.values()):
                 logging.info(f"All agents have met or exceeded target of {games_per_agent_target} games by pairing iteration {iter_num + 1}.")
@@ -558,24 +541,50 @@ def run_game_round(population: list[Agent], config: dict, run_id: str, generatio
 
                 # Check if both agents still need to play more games to reach their target
                 if games_played_this_round_count.get(agent_A_obj.agent_id, 0) < games_per_agent_target and \
-                       games_played_this_round_count.get(agent_B_obj.agent_id, 0) < games_per_agent_target:
-
-                        actual_games_played_this_round_idx += 1
-                        # Create a coroutine for the game; it will be awaited later with asyncio.gather.
-                        # _play_single_game is now an async function.
-                        game_task = _play_single_game(
-                            agent_A_obj, agent_B_obj, config,
-                            run_id, generation_number, actual_games_played_this_round_idx
-                        )
-                        tasks_for_this_pass.append(game_task) # Add the coroutine (task) to the list for this pass.
-
-                        # Mark agents as scheduled for a game in this pass to prevent re-pairing them in the same pass.
-                        # Actual game counts (games_played_this_round_count) will be updated after asyncio.gather completes for the pass.
-                        was_paired_in_this_shuffle_pass[idx1] = True
-                        was_paired_in_this_shuffle_pass[idx2] = True
+                   games_played_this_round_count.get(agent_B_obj.agent_id, 0) < games_per_agent_target:
+                    
+                    actual_games_played_this_round_idx += 1
+                    # Create a coroutine for the game; _play_single_game is now an async function.
+                    # It will be awaited later with asyncio.gather.
+                    game_task = _play_single_game(
+                        agent_A_obj, agent_B_obj, config,
+                        run_id, generation_number, actual_games_played_this_round_idx
+                    )
+                    tasks_for_this_pass.append(game_task) # Add the coroutine to the list for this pass.
+                    
+                    # Mark agents as scheduled for a game in this pass to prevent re-pairing them in the same pass.
+                    # Actual game counts (games_played_this_round_count) and appending to 
+                    # all_games_details_this_round will be handled after asyncio.gather completes for the pass.
+                    was_paired_in_this_shuffle_pass[idx1] = True
+                    was_paired_in_this_shuffle_pass[idx2] = True
+            
+            # After collecting all tasks for the current pairing pass, run them concurrently.
+            if tasks_for_this_pass:
+                logging.info(f"Game round (iter {iter_num+1}): Launching {len(tasks_for_this_pass)} games concurrently for this pass.")
+                # Use return_exceptions=True to handle individual game failures without stopping others.
+                game_results_this_pass = await asyncio.gather(*tasks_for_this_pass, return_exceptions=True)
+                
+                for result_or_exc in game_results_this_pass:
+                    if isinstance(result_or_exc, Exception):
+                        logging.error(f"Game round (iter {iter_num+1}): A game task failed with an exception: {result_or_exc}", exc_info=result_or_exc)
+                        # Note: Agent game counts are not incremented for failed games here.
+                    else:
+                        # result_or_exc is a game_detail_dict if no exception occurred
+                        game_detail_dict = result_or_exc # Rename for clarity
+                        if game_detail_dict and isinstance(game_detail_dict, dict) and game_detail_dict.get("game_id"):
+                            all_games_details_this_round.append(game_detail_dict)
+                            # Update game counts for the agents involved in this successfully completed game.
+                            player_a_id = game_detail_dict.get("player_A_id")
+                            player_b_id = game_detail_dict.get("player_B_id")
+                            if player_a_id and player_a_id in games_played_this_round_count:
+                                 games_played_this_round_count[player_a_id] += 1
+                            if player_b_id and player_b_id in games_played_this_round_count:
+                                 games_played_this_round_count[player_b_id] += 1
+                        else:
+                            logging.error(f"Game round (iter {iter_num+1}): A game task returned an invalid result or no game_id: {game_detail_dict}")
             
             if iter_num == max_iters_pairing - 1: # If max iterations reached
-                 logging.warning(
+                logging.warning(
                     f"Reached max pairing iterations ({max_iters_pairing}). "
                     f"Game counts per agent may not be perfectly uniform at {games_per_agent_target}."
                 )
@@ -587,7 +596,7 @@ def run_game_round(population: list[Agent], config: dict, run_id: str, generatio
         
         agents_below_target = [aid for aid, count in games_played_this_round_count.items() if count < games_per_agent_target]
         if agents_below_target:
-             logging.warning(f"{len(agents_below_target)} agent(s) did not meet the target of {games_per_agent_target} games: {agents_below_target}")
+            logging.warning(f"{len(agents_below_target)} agent(s) did not meet the target of {games_per_agent_target} games: {agents_below_target}")
 
     else: # Other pairing strategies
         logging.error(f"Unsupported pairing strategy: '{pairing_strategy}'. Only 'random_shuffle' is implemented.")
