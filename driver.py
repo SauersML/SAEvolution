@@ -16,6 +16,7 @@ import json
 import uuid
 import argparse
 import shutil # For copying config
+import asyncio
 from pathlib import Path
 from dotenv import load_dotenv
 from manager import Agent, initialize_population, calculate_fitness, evolve_population
