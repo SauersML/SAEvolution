@@ -379,6 +379,7 @@ def load_full_run_data(run_id: str, state_base_dir: str):
         return {
             "config_snapshot": config_snapshot, # config_snapshot is loaded earlier, should be present
             "latest_generation_number": 0,
+            "max_fully_checkpointed_generation": 0, # Max gen with full state (generation_XXXX.json)
             "all_generation_data": {},
             "all_agents_by_id": {},
             "lineages": {},
@@ -390,7 +391,8 @@ def load_full_run_data(run_id: str, state_base_dir: str):
 
     return {
         "config_snapshot": config_snapshot,
-        "latest_generation_number": max_gen_for_dashboard_display, # This is the highest gen with *any* data
+        "latest_generation_number": max_gen_for_dashboard_display, # This is the highest gen with *any* data (full state or just games)
+        "max_fully_checkpointed_generation": last_fully_checkpointed_gen_num, # This is the highest gen with full state (generation_XXXX.json)
         "all_generation_data": all_generation_data, # Contains full state up to last_fully_checkpointed_gen_num
         "all_agents_by_id": dict(all_agents_by_id), 
         "lineages": lineages,
@@ -399,14 +401,6 @@ def load_full_run_data(run_id: str, state_base_dir: str):
         "generation_summary_df": generation_summary_df, # May include a row for in-progress gen
         "interesting_events": interesting_events
     }
-
-
-
-
-
-
-
-
 
 @st.cache_data(ttl=60)
 def load_games_for_generation_cached(run_id: str, generation_number: int, state_base_dir: str) -> list[dict]:
