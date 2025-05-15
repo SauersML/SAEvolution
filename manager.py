@@ -15,7 +15,9 @@ import math
 import copy
 import re
 import goodfire # For goodfire.Variant and goodfire.Feature
-from goodfire import ContextInspector # Import the ContextInspector class directly
+# ContextInspector will be referred to by string literal in type hints
+# as it's not directly importable from 'goodfire' or 'goodfire.features'
+# in the current SDK
 from interface import get_goodfire_async_client, get_goodfire_client 
 
 class Agent:
@@ -458,7 +460,7 @@ async def _inspect_parent_features_task(
     final_messages_for_api_inspect: list[dict], 
     inspect_aggregate_by_val: str, 
     config: dict # Pass config for logging/potential future use
-) -> ContextInspector | Exception | None:
+) -> "ContextInspector" | Exception | None:
     """
     Helper coroutine to run feature inspection for a single parent agent.
     Returns the ContextInspector object on success, an Exception on failure, or None if no inspection is done.
@@ -654,7 +656,10 @@ async def evolve_population(
                 current_result_from_gather = gathered_results[result_idx]
                 result_idx += 1
 
-                if isinstance(current_result_from_gather, ContextInspector):
+                # Duck-typing: Check if the result has the 'top' method,
+                # which is characteristic of a ContextInspector object.
+                # This is used because ContextInspector itself cannot be reliably imported for isinstance checks.
+                if hasattr(current_result_from_gather, 'top') and callable(getattr(current_result_from_gather, 'top')):
                     context_inspector_result = current_result_from_gather
                     # Populate global_feature_cache with any newly fetched feature metadata
                     if hasattr(context_inspector_result, '_features') and isinstance(context_inspector_result._features, dict):
