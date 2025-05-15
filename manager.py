@@ -13,6 +13,7 @@ import logging
 import uuid
 import math
 import copy
+import re
 import goodfire # For goodfire.Variant and goodfire.Feature
 from interface import get_goodfire_async_client, get_goodfire_client 
 
