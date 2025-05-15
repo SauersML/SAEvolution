@@ -234,7 +234,7 @@ def find_latest_run_id(state_base_dir: str) -> str | None:
     return latest_run_id
 
 
-def run_simulation(args):
+async def run_simulation(args):
     # --- Initial Config Loading (might be overridden by checkpoint) ---
     primary_config = load_config(args.config_file)
     if primary_config is None and not args.resume_run_id and not args.resume_latest:
@@ -342,13 +342,13 @@ def run_simulation(args):
         logging.info(f"--- Starting Generation {gen_num}/{num_generations} for run {simulation_run_id} ---")
         generation_game_details = [] 
 
-        try:
-            # *** THE FIX IS HERE: Pass simulation_run_id and gen_num ***
-            population_after_round, generation_game_details = run_game_round(
-                current_population, config, simulation_run_id, gen_num
-            )
-            
-            if not isinstance(population_after_round, list) or len(population_after_round) != len(current_population):
+    try:
+        # Call the asynchronous run_game_round function
+        population_after_round, generation_game_details = await run_game_round(
+            current_population, config, simulation_run_id, gen_num
+        )
+
+        if not isinstance(population_after_round, list) or len(population_after_round) != len(current_population):
                  logging.error(f"Population state invalid after game round in Generation {gen_num}. Expected {len(current_population)} agents, got {len(population_after_round)}. Aborting.")
                  break
             logging.info(f"Completed game round for Generation {gen_num}. {len(generation_game_details)} games played.")
@@ -452,4 +452,5 @@ if __name__ == "__main__":
         # Basic print as logging might not be set up
         print("Error: Cannot use both --resume-run-id and --resume-latest. Choose one.")
     else:
-        run_simulation(cli_args)
+        # Run the main asynchronous simulation function using asyncio.run()
+        asyncio.run(run_simulation(cli_args))
