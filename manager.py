@@ -15,7 +15,7 @@ import math
 import copy
 import re
 import goodfire # For goodfire.Variant and goodfire.Feature
-# from goodfire import ContextInspector # Import the ContextInspector class directly
+from goodfire import ContextInspector # Import the ContextInspector class directly
 from interface import get_goodfire_async_client, get_goodfire_client 
 
 class Agent:
